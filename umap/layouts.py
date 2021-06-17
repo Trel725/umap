@@ -3,6 +3,7 @@ import numba
 import umap.distances as dist
 from umap.utils import tau_rand_int
 
+import assert #ejk: remove eventually XXX
 
 @numba.njit()
 def clip(val):
@@ -270,6 +271,7 @@ def _optimize_layout_euclidean_masked_single_epoch(
                 if densmap_flag:
                     grad_d += clip(2 * grad_cor_coeff * (current[d] - other[d]))
 
+                #ejk: constraint.project_onto_tangent_plane?
                 current[d] += current_mask * grad_d * alpha
                 if move_other:
                     other[d] += - other_mask * grad_d * alpha
@@ -546,10 +548,11 @@ def optimize_layout_euclidean_masked(
         The indices of the heads of 1-simplices with non-zero membership.
     tail: array of shape (n_1_simplices)
         The indices of the tails of 1-simplices with non-zero membership.
-    mask: array of shape (n_samples)
+    mask: array of shape (n_samples) or (n_samples, n_components)
         The weights (in [0,1]) assigned to each sample, defining how much they
         should be updated. 0 means the point will not move at all, 1 means
         they are updated normally. In-between values allow for fine-tuning.
+        A 2-D mask can supply different weights to each dimension of each sample.
     n_epochs: int
         The number of training epochs to use in optimization.
     n_vertices: int
@@ -592,6 +595,10 @@ def optimize_layout_euclidean_masked(
     epochs_per_negative_sample = epochs_per_sample / negative_sample_rate
     epoch_of_next_negative_sample = epochs_per_negative_sample.copy()
     epoch_of_next_sample = epochs_per_sample.copy()
+
+    assert mask is not None
+    assert (pin_mask.shape == head_embedding.shape
+            or pin_mask.shape == torch.Size(head_embedding.shape[0])
 
     optimize_fn = numba.njit(
         _optimize_layout_euclidean_masked_single_epoch, fastmath=True, parallel=parallel

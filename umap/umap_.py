@@ -974,14 +974,15 @@ def simplicial_set_embedding(
     gamma: float
         Weight to apply to negative samples.
 
-    pin_mask : array, shape (n_samples) or None
+    pin_mask : array, shape (n_samples) or (n_samples, n_components) or None
         A mask used for pinning points in the embedding. It should be an array
         of weights in [0,1] (one weight per point), defining how much points
         will be updated from their initial position: 0 means the point will be
         pinned (fixed), 1 means it will be updated normally, and in-between
         values allow for soft-pinning. This argument is useful when providing a
         numpy array for the initial embedding positions (``init`` parameter of
-        the ``UMAP`` class).
+        the ``UMAP`` class).  A 2-D mask can supply different updating weight
+        to each dimension of each sample.
 
     negative_sample_rate: int (optional, default 5)
         The number of negative samples to select per positive sample
@@ -2218,7 +2219,8 @@ class UMAP(BaseEstimator):
             pinned (fixed), 1 means it will be updated normally, and in-between
             values allow for soft-pinning. This argument is useful when providing a
             numpy array for the initial embedding positions (``init`` parameter of
-            the ``UMAP`` class).
+            the ``UMAP`` class).  A 2-D mask can supply different updating weight
+            to each dimension of each sample.
         """
 
         X = check_array(X, dtype=np.float32, accept_sparse="csr", order="C")
@@ -2706,7 +2708,8 @@ class UMAP(BaseEstimator):
             pinned (fixed), 1 means it will be updated normally, and in-between
             values allow for soft-pinning. This argument is useful when providing a
             numpy array for the initial embedding positions (``init`` parameter of
-            the ``UMAP`` class).
+            the ``UMAP`` class).  A 2-D mask can supply different updating weight
+            to each dimension of each sample.
 
         Returns
         -------
