@@ -3,8 +3,6 @@ import numba
 import umap.distances as dist
 from umap.utils import tau_rand_int
 
-import assert #ejk: remove eventually XXX
-
 @numba.njit()
 def clip(val):
     """Standard clamping of a value into a fixed range (in this case -4.0 to
@@ -598,7 +596,7 @@ def optimize_layout_euclidean_masked(
 
     assert mask is not None
     assert (pin_mask.shape == head_embedding.shape
-            or pin_mask.shape == torch.Size(head_embedding.shape[0])
+            or pin_mask.shape == torch.Size(head_embedding.shape[0]))
 
     optimize_fn = numba.njit(
         _optimize_layout_euclidean_masked_single_epoch, fastmath=True, parallel=parallel
