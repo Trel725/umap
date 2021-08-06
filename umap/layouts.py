@@ -74,6 +74,7 @@ def _optimize_layout_euclidean_single_epoch(
     epoch_of_next_negative_sample,
     epoch_of_next_sample,
     n,
+    #pin_mask, --> "Something unsupported is present in the user code"
     densmap_flag,
     dens_phi_sum,
     dens_re_sum,
@@ -270,9 +271,9 @@ def _optimize_layout_euclidean_masked_single_epoch(
                     grad_d += clip(2 * grad_cor_coeff * (current[d] - other[d]))
 
                 #ejk: constraint.project_onto_tangent_plane?
-                current[d] += current_mask * grad_d * alpha
+                current[d] += current_mask[d] * grad_d * alpha
                 if move_other:
-                    other[d] += - other_mask * grad_d * alpha
+                    other[d] += - other_mask[d] * grad_d * alpha
 
             epoch_of_next_sample[i] += epochs_per_sample[i]
 
@@ -302,16 +303,22 @@ def _optimize_layout_euclidean_masked_single_epoch(
                         grad_d = clip(grad_coeff * (current[d] - other[d]))
                     else:
                         grad_d = 4.0
-                    current[d] += current_mask * grad_d * alpha
+                    current[d] += current_mask[d] * grad_d * alpha
 
             epoch_of_next_negative_sample[i] += (
                 n_neg_samples * epochs_per_negative_sample[i]
             )
 
 
-
 def _optimize_layout_euclidean_densmap_epoch_init(
-    head_embedding, tail_embedding, head, tail, a, b, re_sum, phi_sum,
+    head_embedding,
+    tail_embedding,
+    head,
+    tail,
+    a,
+    b,
+    re_sum,
+    phi_sum,
 ):
     re_sum.fill(0)
     phi_sum.fill(0)
@@ -350,10 +357,12 @@ def optimize_layout_euclidean(
     gamma=1.0,
     initial_alpha=1.0,
     negative_sample_rate=5.0,
+    # NO: pin_mask=None,
     parallel=False,
     verbose=False,
     densmap=False,
     densmap_kwds={},
+    move_other=False,
 ):
     """Improve an embedding using stochastic gradient descent to minimize the
     fuzzy set cross entropy between the 1-skeletons of the high dimensional
@@ -402,6 +411,8 @@ def optimize_layout_euclidean(
         Whether to use the density-augmented densMAP objective
     densmap_kwds: dict (optional, default {})
         Auxiliary data for densMAP
+    move_other: bool (optional, default False)
+        Whether to adjust tail_embedding alongside head_embedding
     Returns
     -------
     embedding: array of shape (n_samples, n_components)
@@ -409,12 +420,15 @@ def optimize_layout_euclidean(
     """
 
     dim = head_embedding.shape[1]
-    move_other = head_embedding.shape[0] == tail_embedding.shape[0]
     alpha = initial_alpha
 
     epochs_per_negative_sample = epochs_per_sample / negative_sample_rate
     epoch_of_next_negative_sample = epochs_per_negative_sample.copy()
     epoch_of_next_sample = epochs_per_sample.copy()
+
+    #if pin_mask is not None:
+    #    assert (pin_mask.shape == head_embedding.shape
+    #            or pin_mask.shape == torch.Size(head_embedding.shape[0]))
 
     optimize_fn = numba.njit(
         _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel
@@ -488,6 +502,7 @@ def optimize_layout_euclidean(
             epoch_of_next_negative_sample,
             epoch_of_next_sample,
             n,
+            # NO: pin_mask,
             densmap_flag,
             dens_phi_sum,
             dens_re_sum,
@@ -508,12 +523,13 @@ def optimize_layout_euclidean(
     return head_embedding
 
 
+
 def optimize_layout_euclidean_masked(
     head_embedding,
     tail_embedding,
     head,
     tail,
-    mask,
+    pin_mask,
     n_epochs,
     n_vertices,
     epochs_per_sample,
@@ -527,6 +543,7 @@ def optimize_layout_euclidean_masked(
     verbose=False,
     densmap=False,
     densmap_kwds={},
+    move_other=False,
 ):
     """Improve an embedding using stochastic gradient descent to minimize the
     fuzzy set cross entropy between the 1-skeletons of the high dimensional
@@ -546,7 +563,7 @@ def optimize_layout_euclidean_masked(
         The indices of the heads of 1-simplices with non-zero membership.
     tail: array of shape (n_1_simplices)
         The indices of the tails of 1-simplices with non-zero membership.
-    mask: array of shape (n_samples) or (n_samples, n_components)
+    pin_mask: array of shape (n_samples) or (n_samples, n_components)
         The weights (in [0,1]) assigned to each sample, defining how much they
         should be updated. 0 means the point will not move at all, 1 means
         they are updated normally. In-between values allow for fine-tuning.
@@ -580,6 +597,8 @@ def optimize_layout_euclidean_masked(
         Whether to use the density-augmented densMAP objective
     densmap_kwds: dict (optional, default {})
         Auxiliary data for densMAP
+    move_other: bool (optional, default False)
+        Whether to adjust tail_embedding alongside head_embedding
     Returns
     -------
     embedding: array of shape (n_samples, n_components)
@@ -587,14 +606,14 @@ def optimize_layout_euclidean_masked(
     """
 
     dim = head_embedding.shape[1]
-    move_other = head_embedding.shape[0] == tail_embedding.shape[0]
+    #move_other = head_embedding.shape[0] == tail_embedding.shape[0]
     alpha = initial_alpha
 
     epochs_per_negative_sample = epochs_per_sample / negative_sample_rate
     epoch_of_next_negative_sample = epochs_per_negative_sample.copy()
     epoch_of_next_sample = epochs_per_sample.copy()
 
-    assert mask is not None
+    assert pin_mask is not None
     assert (pin_mask.shape == head_embedding.shape
             or pin_mask.shape == torch.Size(head_embedding.shape[0]))
 
@@ -657,7 +676,7 @@ def optimize_layout_euclidean_masked(
             tail_embedding,
             head,
             tail,
-            mask,
+            pin_mask,
             n_vertices,
             epochs_per_sample,
             a,
@@ -709,6 +728,7 @@ def optimize_layout_generic(
     output_metric=dist.euclidean,
     output_metric_kwds=(),
     verbose=False,
+    move_other=False,
 ):
     """Improve an embedding using stochastic gradient descent to minimize the
     fuzzy set cross entropy between the 1-skeletons of the high dimensional
@@ -767,6 +787,9 @@ def optimize_layout_generic(
     verbose: bool (optional, default False)
         Whether to report information on the current progress of the algorithm.
 
+    move_other: bool (optional, default False)
+        Whether to adjust tail_embedding alongside head_embedding
+
     Returns
     -------
     embedding: array of shape (n_samples, n_components)
@@ -774,7 +797,6 @@ def optimize_layout_generic(
     """
 
     dim = head_embedding.shape[1]
-    move_other = head_embedding.shape[0] == tail_embedding.shape[0]
     alpha = initial_alpha
 
     epochs_per_negative_sample = epochs_per_sample / negative_sample_rate
@@ -873,6 +895,7 @@ def optimize_layout_inverse(
     output_metric=dist.euclidean,
     output_metric_kwds=(),
     verbose=False,
+    move_other=False,
 ):
     """Improve an embedding using stochastic gradient descent to minimize the
     fuzzy set cross entropy between the 1-skeletons of the high dimensional
@@ -931,6 +954,9 @@ def optimize_layout_inverse(
     verbose: bool (optional, default False)
         Whether to report information on the current progress of the algorithm.
 
+    move_other: bool (optional, default False)
+        Whether to adjust tail_embedding alongside head_embedding
+
     Returns
     -------
     embedding: array of shape (n_samples, n_components)
@@ -938,7 +964,6 @@ def optimize_layout_inverse(
     """
 
     dim = head_embedding.shape[1]
-    move_other = head_embedding.shape[0] == tail_embedding.shape[0]
     alpha = initial_alpha
 
     epochs_per_negative_sample = epochs_per_sample / negative_sample_rate
@@ -1034,6 +1059,7 @@ def _optimize_layout_aligned_euclidean_single_epoch(
             max_n_edges = e_p_s.shape[0]
 
     embedding_order = np.arange(n_embeddings).astype(np.int32)
+    np.random.seed(abs(rng_state[0]))
     np.random.shuffle(embedding_order)
 
     for i in range(max_n_edges):
@@ -1184,9 +1210,9 @@ def optimize_layout_aligned_euclidean(
     negative_sample_rate=5.0,
     parallel=True,
     verbose=False,
+    move_other=False,
 ):
     dim = head_embeddings[0].shape[1]
-    move_other = head_embeddings[0].shape[0] == tail_embeddings[0].shape[0]
     alpha = initial_alpha
 
     epochs_per_negative_sample = numba.typed.List.empty_list(numba.types.float32[::1])

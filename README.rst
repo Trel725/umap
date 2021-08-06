@@ -1,5 +1,10 @@
 .. -*- mode: rst -*-
 
+.. image:: doc/logo_large.png
+  :width: 600
+  :alt: UMAP logo
+  :align: center
+
 |pypi_version|_ |pypi_downloads|_
 
 |conda_version|_ |conda_downloads|_
@@ -478,7 +483,7 @@ If you use the Parametric UMAP algorithm in your work please cite the following 
         title = {Parametric UMAP: learning embeddings with deep neural networks for representation and semi-supervised learning},
         journal = {ArXiv e-prints},
         archivePrefix = "arXiv",
-        eprint = {},
+        eprint = {2009.12981},
         primaryClass = "stat.ML",
         keywords = {Statistics - Machine Learning,
                     Computer Science - Computational Geometry,

@@ -928,7 +928,6 @@ def simplicial_set_embedding(
     a,
     b,
     gamma,
-    pin_mask,
     negative_sample_rate,
     n_epochs,
     init,
@@ -941,6 +940,7 @@ def simplicial_set_embedding(
     output_metric=dist.named_distances_with_gradients["euclidean"],
     output_metric_kwds={},
     euclidean_output=True,
+    pin_mask=None,
     parallel=False,
     verbose=False,
 ):
@@ -1160,33 +1160,13 @@ def simplicial_set_embedding(
     ).astype(np.float32, order="C")
 
     if euclidean_output:
-        if pin_mask is not None:
-            embedding = optimize_layout_euclidean_masked(
-                embedding,
-                embedding,
-                head,
-                tail,
-                pin_mask,
-                n_epochs,
-                n_vertices,
-                epochs_per_sample,
-                a,
-                b,
-                rng_state,
-                gamma,
-                initial_alpha,
-                negative_sample_rate,
-                parallel=parallel,
-                verbose=verbose,
-                densmap=densmap,
-                densmap_kwds=densmap_kwds,
-            )
-        else:
+        if pin_mask is None:
             embedding = optimize_layout_euclidean(
                 embedding,
                 embedding,
                 head,
                 tail,
+                # NO pin_mask, # <--- constrained gradients
                 n_epochs,
                 n_vertices,
                 epochs_per_sample,
@@ -1200,6 +1180,29 @@ def simplicial_set_embedding(
                 verbose=verbose,
                 densmap=densmap,
                 densmap_kwds=densmap_kwds,
+                move_other=True,
+            )
+        else:
+            embedding = optimize_layout_euclidean_masked(
+                embedding,
+                embedding,
+                head,
+                tail,
+                pin_mask, # <--- constrained gradients
+                n_epochs,
+                n_vertices,
+                epochs_per_sample,
+                a,
+                b,
+                rng_state,
+                gamma,
+                initial_alpha,
+                negative_sample_rate,
+                parallel=parallel,
+                verbose=verbose,
+                densmap=densmap,
+                densmap_kwds=densmap_kwds,
+                move_other=True,
             )
     else:
         embedding = optimize_layout_generic(
@@ -1219,8 +1222,8 @@ def simplicial_set_embedding(
             output_metric,
             tuple(output_metric_kwds.values()),
             verbose=verbose,
+            move_other=True,
         )
-
     if output_dens:
         if verbose:
             print(ts() + " Computing embedding densities")
@@ -1343,15 +1346,14 @@ def init_graph_transform(graph, embedding):
         if num_neighbours == 0:
             result[row_index] = np.nan
             continue
+        row_sum = np.sum(graph[row_index])
         for col_index in graph[row_index].indices:
             if graph[row_index, col_index] == 1:
                 result[row_index, :] = embedding[col_index, :]
                 break
             for d in range(embedding.shape[1]):
                 result[row_index, d] += (
-                    graph[row_index, col_index]
-                    / num_neighbours
-                    * embedding[col_index, d]
+                    graph[row_index, col_index] / row_sum * embedding[col_index, d]
                 )
 
     return result
@@ -1788,9 +1790,7 @@ class UMAP(BaseEstimator):
         elif self.metric == "precomputed":
             if self.unique:
                 raise ValueError("unique is poorly defined on a precomputed metric")
-            warn(
-                "using precomputed metric; inverse_transform will be unavailable"
-            )
+            warn("using precomputed metric; inverse_transform will be unavailable")
             self._input_distance_func = self.metric
             self._inverse_distance_func = None
         elif self.metric == "hellinger" and self._raw_data.min() < 0:
@@ -2031,7 +2031,6 @@ class UMAP(BaseEstimator):
             np.mean(result._a),
             np.mean(result._b),
             np.mean(result.repulsion_strength),
-            None,
             np.mean(result.negative_sample_rate),
             n_epochs,
             init,
@@ -2041,6 +2040,10 @@ class UMAP(BaseEstimator):
             result.densmap,
             result._densmap_kwds,
             result.output_dens,
+            # output_metric : default "euclidean"
+            # output_metric_kwds : default {}
+            # euclidean_output : default True
+            # pin_mask : default None
             parallel=False,
             verbose=bool(np.max(result.verbose)),
         )
@@ -2101,7 +2104,6 @@ class UMAP(BaseEstimator):
             np.mean(result._a),
             np.mean(result._b),
             np.mean(result.repulsion_strength),
-            None,
             np.mean(result.negative_sample_rate),
             n_epochs,
             init,
@@ -2111,6 +2113,10 @@ class UMAP(BaseEstimator):
             result.densmap,
             result._densmap_kwds,
             result.output_dens,
+            # output_metric : default "euclidean"
+            # output_metric_kwds : default {}
+            # euclidean_output : default True
+            # pin_mask : default None
             parallel=False,
             verbose=bool(np.max(result.verbose)),
         )
@@ -2173,7 +2179,6 @@ class UMAP(BaseEstimator):
             np.mean(result._a),
             np.mean(result._b),
             np.mean(result.repulsion_strength),
-            None,
             np.mean(result.negative_sample_rate),
             n_epochs,
             init,
@@ -2183,6 +2188,10 @@ class UMAP(BaseEstimator):
             result.densmap,
             result._densmap_kwds,
             result.output_dens,
+            # output_metric : default "euclidean"
+            # output_metric_kwds : default {}
+            # euclidean_output : default True
+            # pin_mask : default None
             parallel=False,
             verbose=bool(np.max(result.verbose)),
         )
@@ -2362,7 +2371,7 @@ class UMAP(BaseEstimator):
                 self.angular_rp_forest,
                 self.set_op_mix_ratio,
                 self.local_connectivity,
-                True,
+                True, # apply_set_operations
                 self.verbose,
                 self.densmap or self.output_dens,
             )
@@ -2660,6 +2669,12 @@ class UMAP(BaseEstimator):
         """A method wrapper for simplicial_set_embedding that can be
         replaced by subclasses.
         """
+        if pin_mask is not None:
+            print("X.shape", X.shape)
+            print("pin_mask.shape", pin_mask.shape)
+            assert( pin_mask.shape == init.shape
+                   or pin_mask.shape == init.shape[0] )
+
         return simplicial_set_embedding(
             X,
             self.graph_,
@@ -2668,7 +2683,6 @@ class UMAP(BaseEstimator):
             self._a,
             self._b,
             self.repulsion_strength,
-            pin_mask,
             self.negative_sample_rate,
             n_epochs,
             init,
@@ -2680,8 +2694,9 @@ class UMAP(BaseEstimator):
             self.output_dens,
             self._output_distance_func,
             self._output_metric_kwds,
-            self.output_metric in ("euclidean", "l2"),
-            self.random_state is None,
+            self.output_metric in ("euclidean", "l2"), # euclidean_output?
+            pin_mask,
+            self.random_state is None, # parallel?
             self.verbose,
         )
 
@@ -2782,26 +2797,32 @@ class UMAP(BaseEstimator):
         random_state = check_random_state(self.transform_seed)
         rng_state = random_state.randint(INT32_MIN, INT32_MAX, 3).astype(np.int64)
 
-        if self.metric == 'precomputed':
-            warn("Transforming new data with precomputed metric. "
-                 "We are assuming the input data is a matrix of distances from the new points "
-                 "to the points in the training set. If the input matrix is sparse, it should "
-                 "contain distances from the new points to their nearest neighbours "
-                 "or approximate nearest neighbours in the training set.")
+        if self.metric == "precomputed":
+            warn(
+                "Transforming new data with precomputed metric. "
+                "We are assuming the input data is a matrix of distances from the new points "
+                "to the points in the training set. If the input matrix is sparse, it should "
+                "contain distances from the new points to their nearest neighbours "
+                "or approximate nearest neighbours in the training set."
+            )
             assert X.shape[1] == self._raw_data.shape[0]
             if scipy.sparse.issparse(X):
-                indices = np.full((X.shape[0], self._n_neighbors), dtype=np.int32, fill_value=-1)
+                indices = np.full(
+                    (X.shape[0], self._n_neighbors), dtype=np.int32, fill_value=-1
+                )
                 dists = np.full_like(indices, dtype=np.float32, fill_value=-1)
                 for i in range(X.shape[0]):
                     data_indices = np.argsort(X[i].data)
                     if len(data_indices) < self._n_neighbors:
-                        raise ValueError(f"Need at least n_neighbors ({self.n_neighbors}) distances for each row!")
-                    indices[i] = X[i].indices[data_indices[:self._n_neighbors]]
-                    dists[i] = X[i].data[data_indices[:self._n_neighbors]]
+                        raise ValueError(
+                            f"Need at least n_neighbors ({self.n_neighbors}) distances for each row!"
+                        )
+                    indices[i] = X[i].indices[data_indices[: self._n_neighbors]]
+                    dists[i] = X[i].data[data_indices[: self._n_neighbors]]
             else:
-                indices = np.argsort(X, axis=1)[:, :self._n_neighbors].astype(np.int32)
+                indices = np.argsort(X, axis=1)[:, : self._n_neighbors].astype(np.int32)
                 dists = np.take_along_axis(X, indices, axis=1)
-            assert np.min(indices) >= 0 and np.min(dists) >= 0.
+            assert np.min(indices) >= 0 and np.min(dists) >= 0.0
         elif self._small_data:
             try:
                 # sklearn pairwise_distances fails for callable metric on sparse data
@@ -2810,12 +2831,32 @@ class UMAP(BaseEstimator):
                     X, self._raw_data, metric=_m, **self._metric_kwds
                 )
             except (TypeError, ValueError):
-                dmat = dist.pairwise_special_metric(
-                    X,
-                    self._raw_data,
-                    metric=self._input_distance_func,
-                    kwds=self._metric_kwds,
-                )
+                # metric is numba.jit'd or not supported by sklearn,
+                # fallback to pairwise special
+                if self._sparse_data:
+                    # Get a fresh metric since we are casting to dense
+                    if not callable(self.metric):
+                        _m = dist.named_distances[self.metric]
+                        dmat = dist.pairwise_special_metric(
+                            X.toarray(),
+                            self._raw_data.toarray(),
+                            metric=_m,
+                            kwds=self._metric_kwds,
+                        )
+                    else:
+                        dmat = dist.pairwise_special_metric(
+                            X,
+                            self._raw_data,
+                            metric=self._input_distance_func,
+                            kwds=self._metric_kwds,
+                        )
+                else:
+                    dmat = dist.pairwise_special_metric(
+                        X,
+                        self._raw_data,
+                        metric=self._input_distance_func,
+                        kwds=self._metric_kwds,
+                    )
             indices = np.argpartition(dmat, self._n_neighbors)[:, : self._n_neighbors]
             dmat_shortened = submatrix(dmat, indices, self._n_neighbors)
             indices_sorted = np.argsort(dmat_shortened)
@@ -3220,7 +3261,6 @@ class UMAP(BaseEstimator):
                 self._a,
                 self._b,
                 self.repulsion_strength,
-                None,
                 self.negative_sample_rate,
                 n_epochs,
                 init,
@@ -3233,6 +3273,7 @@ class UMAP(BaseEstimator):
                 self._output_distance_func,
                 self._output_metric_kwds,
                 self.output_metric in ("euclidean", "l2"),
+                None, # pin_mask
                 self.random_state is None,
                 self.verbose,
             )
@@ -3286,7 +3327,6 @@ class UMAP(BaseEstimator):
                 self._a,
                 self._b,
                 self.repulsion_strength,
-                None,
                 self.negative_sample_rate,
                 n_epochs,
                 init,
@@ -3299,6 +3339,7 @@ class UMAP(BaseEstimator):
                 self._output_distance_func,
                 self._output_metric_kwds,
                 self.output_metric in ("euclidean", "l2"),
+                None, # pin_mask
                 self.random_state is None,
                 self.verbose,
             )
