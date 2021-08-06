@@ -21,4 +21,6 @@ venv
 *__pycache__
 
 # metadata from pip-installing repo
-umap_learn.egg-info
+umap_learn.egg-infoconda
+*egg-info
+conda

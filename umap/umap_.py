@@ -1153,11 +1153,14 @@ def simplicial_set_embedding(
         if output_dens:
             aux_data["rad_orig"] = ro
 
-    embedding = (
-        10.0
-        * (embedding - np.min(embedding, 0))
-        / (np.max(embedding, 0) - np.min(embedding, 0))
-    ).astype(np.float32, order="C")
+    if euclidean_output and pin_mask is not None:
+        embedding = (
+            10.0
+            * (embedding - np.min(embedding, 0))
+            / (np.max(embedding, 0) - np.min(embedding, 0))
+        ).astype(np.float32, order="C")
+    else:
+        embedding = embedding.astype(np.float32,order="C")
 
     if euclidean_output:
         if pin_mask is None:

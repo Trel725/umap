@@ -169,16 +169,23 @@ def _optimize_layout_euclidean_single_epoch(
                 else:
                     grad_coeff = 0.0
 
-                for d in range(dim):
-                    if grad_coeff > 0.0:
-                        grad_d = clip(grad_coeff * (current[d] - other[d]))
-                    else:
-                        grad_d = 4.0
-                    current[d] += grad_d * alpha
+                if grad_coeff > 0.0:
+                    for d in range(dim):
+                        #grad_d = clip(grad_coeff * (current[d] - other[d]))
+                        current[d] += clip(grad_coeff * (current[d] - other[d])) * alpha
+                else:
+                    for d in range(dim):
+                        #grad_d = 4.0
+                        current[d] += 4.0 * alpha
+
+            # constraints (projection?) on current[d]?
 
             epoch_of_next_negative_sample[i] += (
                 n_neg_samples * epochs_per_negative_sample[i]
             )
+
+        # or may now constrain full set of head_embedding values?
+        #  i.e. center at origin, rescale to sdev 1 ?
 
 
 def _optimize_layout_euclidean_masked_single_epoch(
@@ -298,12 +305,21 @@ def _optimize_layout_euclidean_masked_single_epoch(
                 else:
                     grad_coeff = 0.0
 
-                for d in range(dim):
-                    if grad_coeff > 0.0:
-                        grad_d = clip(grad_coeff * (current[d] - other[d]))
-                    else:
-                        grad_d = 4.0
-                    current[d] += current_mask[d] * grad_d * alpha
+                # move conditional out of loop.
+                #for d in range(dim):
+                #    if grad_coeff > 0.0:
+                #        grad_d = clip(grad_coeff * (current[d] - other[d]))
+                #    else:
+                #        grad_d = 4.0
+                #    current[d] += current_mask[d] * grad_d * alpha
+                if grad_coeff > 0.0:
+                    for d in range(dim):
+                        current[d] += ( current_mask[d]
+                                       * clip(grad_coeff * (current[d] - other[d]))
+                                       * alpha )
+                else:
+                    for d in range(dim):
+                        current[d] += current_mask[d] * (4.0 * alpha)
 
             epoch_of_next_negative_sample[i] += (
                 n_neg_samples * epochs_per_negative_sample[i]
