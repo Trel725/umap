@@ -3,6 +3,9 @@ import numba
 import umap.distances as dist
 from umap.utils import tau_rand_int
 
+layout_version = 1
+from umap.constraints import DimLohi, constrain_lo, constrain_hi
+
 @numba.njit()
 def clip(val):
     """Standard clamping of a value into a fixed range (in this case -4.0 to
@@ -23,7 +26,6 @@ def clip(val):
         return -4.0
     else:
         return val
-
 
 @numba.njit(
     "f4(f4[::1],f4[::1])",
@@ -86,6 +88,12 @@ def _optimize_layout_euclidean_single_epoch(
     dens_mu,
     dens_mu_tot,
 ):
+    # TRIAL: constrain 'x' (first) embedding dim to [-1,+1] range
+    # (we can safely specify fewer (the first) dims to be bounded)
+    los = np.array([constrain_lo], dtype=np.float32)
+    his = np.array([constrain_hi], dtype=np.float32)
+    constraint = DimLohi(los, his)
+
     for i in numba.prange(epochs_per_sample.shape[0]):
         if epoch_of_next_sample[i] <= n:
             j = head[i]
@@ -146,6 +154,12 @@ def _optimize_layout_euclidean_single_epoch(
                 if move_other:
                     other[d] += -grad_d * alpha
 
+            # TRIAL:
+            if constraint is not None:
+                constraint.project_onto_constraint(current)
+                if move_other:
+                    constraint.project_onto_constraint(other)
+
             epoch_of_next_sample[i] += epochs_per_sample[i]
 
             n_neg_samples = int(
@@ -178,6 +192,12 @@ def _optimize_layout_euclidean_single_epoch(
                         #grad_d = 4.0
                         current[d] += 4.0 * alpha
 
+                # TRIAL:
+                if constraint is not None:
+                    constraint.project_onto_constraint(current)
+                    if move_other:
+                        constraint.project_onto_constraint(other)
+
             # constraints (projection?) on current[d]?
 
             epoch_of_next_negative_sample[i] += (
@@ -185,7 +205,7 @@ def _optimize_layout_euclidean_single_epoch(
             )
 
         # or may now constrain full set of head_embedding values?
-        #  i.e. center at origin, rescale to sdev 1 ?
+        #  i.e. center at origin, rescale to sdev 1, ... ?
 
 
 def _optimize_layout_euclidean_masked_single_epoch(
@@ -218,6 +238,22 @@ def _optimize_layout_euclidean_masked_single_epoch(
     dens_mu,
     dens_mu_tot,
 ):
+    # TRIAL: constrain 'x' (first) embedding dim to [-1,+1] range
+    # (we can safely specify fewer (the first) dims to be bounded)
+    los = np.array([constrain_lo], dtype=np.float32)
+    his = np.array([constrain_hi], dtype=np.float32)
+    constraint = DimLohi(los, his)
+
+    # DEBUG:
+    #if pin_mask is not None:
+    #    for i in numba.prange(head.shape[0]):
+    #        j = head[i]
+    #        current = head_embedding[j]
+    #        current_mask = mask[j]
+    #        for d in range(dim):
+    #            if current_mask[d] == 0.0:
+    #                print("i,j=",i,j," current",current,"  pinned dim",d,"  begins at",current[d])
+
     for i in numba.prange(epochs_per_sample.shape[0]):
         if epoch_of_next_sample[i] <= n:
             j = head[i]
@@ -278,9 +314,18 @@ def _optimize_layout_euclidean_masked_single_epoch(
                     grad_d += clip(2 * grad_cor_coeff * (current[d] - other[d]))
 
                 #ejk: constraint.project_onto_tangent_plane?
+                #cd = current[d]
                 current[d] += current_mask[d] * grad_d * alpha
+                #if current_mask[d] == 0.0:
+                #    print("current head[",j,"] pinned dim",d,"  cd",cd,"to",current[d])
                 if move_other:
                     other[d] += - other_mask[d] * grad_d * alpha
+
+            # TRIAL: current/other may have moved
+            if constraint is not None:
+                constraint.project_onto_constraint(current)
+                if move_other:
+                    constraint.project_onto_constraint(other)
 
             epoch_of_next_sample[i] += epochs_per_sample[i]
 
@@ -318,8 +363,16 @@ def _optimize_layout_euclidean_masked_single_epoch(
                                        * clip(grad_coeff * (current[d] - other[d]))
                                        * alpha )
                 else:
+                    # I don't understand why such should "expand around origin"
+                    # Why not random jitter? Why not by 'local distance' instead of alpha?
                     for d in range(dim):
                         current[d] += current_mask[d] * (4.0 * alpha)
+
+                # TRIAL: current may have moved
+                if constraint is not None:
+                    constraint.project_onto_constraint(current)
+                    if move_other:
+                        constraint.project_onto_constraint(other)
 
             epoch_of_next_negative_sample[i] += (
                 n_neg_samples * epochs_per_negative_sample[i]
@@ -621,6 +674,8 @@ def optimize_layout_euclidean_masked(
         The optimized embedding.
     """
 
+    print("TRIAL: opt+mask+version",layout_version)
+
     dim = head_embedding.shape[1]
     #move_other = head_embedding.shape[0] == tail_embedding.shape[0]
     alpha = initial_alpha
@@ -632,6 +687,11 @@ def optimize_layout_euclidean_masked(
     assert pin_mask is not None
     assert (pin_mask.shape == head_embedding.shape
             or pin_mask.shape == torch.Size(head_embedding.shape[0]))
+    # DEBUG:
+    for i in range(pin_mask.shape[0]):
+        for d in range(dim):
+            if pin_mask[i,d] == 0.0:
+                print("sample",i,"pin head[",d,"] begins at",head_embedding[i,d])
 
     optimize_fn = numba.njit(
         _optimize_layout_euclidean_masked_single_epoch, fastmath=True, parallel=parallel

@@ -1110,6 +1110,14 @@ def simplicial_set_embedding(
                 ).astype(np.float32)
             else:
                 embedding = init_data
+    
+    if pin_mask is not None:
+        pin_mask = pin_mask.astype(np.float32,order="C")
+        # DEBUG:
+        #print("simplicial_set_embedding: pinned init...")
+        #for i in range(init.shape[0]):
+        #    if np.any(pin_mask[i,] == 0.0):
+        #        print("sample",i,"pins",pin_mask[i,],"init",init[i,])
 
     epochs_per_sample = make_epochs_per_sample(graph.data, n_epochs)
 
@@ -1153,7 +1161,13 @@ def simplicial_set_embedding(
         if output_dens:
             aux_data["rad_orig"] = ro
 
-    if euclidean_output and pin_mask is not None:
+    # if pin_mask specified an init array, we must NOT rescale it
+    # This well-meaning rescale may also be incompatible with "constraint objects"
+    if euclidean_output and pin_mask is None:
+        # o.w. rescale embedding to range [0.,10.] (why not [-10.,10.]?)
+        # This rescale is PER LOW EMBEDDING DIMENSION, which seems VERY BAD.
+        #   (because this changes relative distances in a rotationally variant way)
+        # What initializations give dimension-wise bad scalings? spectral?
         embedding = (
             10.0
             * (embedding - np.min(embedding, 0))
@@ -2247,6 +2261,12 @@ class UMAP(BaseEstimator):
 
         if isinstance(self.init, np.ndarray):
             init = check_array(self.init, dtype=np.float32, accept_sparse=False)
+            # DEBUG:
+            #if pin_mask is not None:
+            #    print("debug fit pinned init items")
+            #    for i in range(init.shape[0]):
+            #        if np.any(pin_mask[i,] == 0.0):
+            #            print("sample",i,"pins",pin_mask[i,],"init",init[i,])
         else:
             init = self.init
 
@@ -2677,6 +2697,11 @@ class UMAP(BaseEstimator):
             print("pin_mask.shape", pin_mask.shape)
             assert( pin_mask.shape == init.shape
                    or pin_mask.shape == init.shape[0] )
+            # DEBUG:
+            #print("_fit_embed_data pinned init items")
+            #for i in range(init.shape[0]):
+            #    if np.any(pin_mask[i,] == 0.0):
+            #        print("sample",i,"pins",pin_mask[i,],"init",init[i,])
 
         return simplicial_set_embedding(
             X,
