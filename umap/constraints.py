@@ -16,7 +16,7 @@ dimLohiSpec = [
 class DimLohi(object):
     def __init__(self, lo, hi):
         """ clip dim[i] to range lo[i]..hi[i], for i with lo[i] < hi[i];
-            o/w clip to [-10.0,+10.0]
+            o/w clip to [-10.0,+10.0].
         """
         if self.lo.size != self.hi.size:
             print("warning: DimLohi(lo[],hi[]) lo and hi vectors should have same size")
@@ -38,7 +38,11 @@ class DimLohi(object):
     #@numba.jit(numba.types.float32[:](numba.typeof(dimLohiSpec), numba.types.float32[:]))
     # --> "class members not yet supported"
     def project_onto_constraint(self, vec):
-        """ In-place bounding of vec[] dimension-wise """
+        """ In-place bounding of vec[] dimension-wise.
+            
+            Well, the first self.lo.size dimensions of vec[]).
+            Ex. if lo,hi size is one, this constraint applies only to vec[0] "x".
+        """
         if len(vec.shape) == 1 and vec.shape[0] >= self.lo.size:
             #nchange = 0
             for i in range(self.lo.size):
