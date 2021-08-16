@@ -223,6 +223,69 @@ class HardPinIndexed(object):
         grads[self.idx,:] = 0.0
         return grads
 
+# PinNoninf taking a numpy.ma MaskedArray (or matrix all non-inf entries "pinned"?)
+# but keeping the indexed calls for individual row projections.
+# This replaces searching for the index with a faster lookup.
+pinNoninfSpec = [
+    ("mask",       numba.types.int32[:]),      # inf entries are unconstrained.
+]
+
+@jitclass(pinNoninfSpec)
+class PinNoninf(object):
+    """ matrix entries that are non-inf are pinned.
+
+        Rows of point cloud matrix are vectors.
+        This constraint keeps any non-inf matrix elements from moving.
+        (a row can be partly constrained)
+
+        Projecting individual rows, we supply the sample # as an index.
+        Projections assume properly-sized input arguments.
+
+        This should be a faster alternative to HardPinIndexed, because
+        index lookups have been replaced with lookups.
+    """
+    def __init__(self, unpin):
+        if not (len(unpin.shape)==2):
+            print("Warning: strange PinNoninf shape:",idx.shape)
+        self.unpin = pos[order,]
+
+    def name(self):
+        return f"HardPin[{len(self.idx)}]"
+
+    def project_index_onto_constraint(self, idx, vec):
+        """ If row 'idx' of self.unpin is not infinity, change vec to self.unpin value.
+            In-place modification of vec (if possible).
+        """
+        vals = self.unpin[idx,:]
+        mask = ~np.isinf(vals)
+        vec[mask] = vals[mask]
+        return vec
+
+    def project_index_onto_tangent_space(self, idx, vec, grad):
+        """ zero out those gradients for vec
+            that are non-inf in self.unpin[idx,].
+        """
+        #del vec # not with jit
+        vals = self.unpin[idx,:]
+        mask = ~np.isinf(vals)
+        grad[mask] = 0.0
+        return grad
+
+    def project_rows_onto_constraint(self, data):
+        """ Take anchored (sample in self.idx) subset of data[samples, dim]
+            to pinned posn.
+        """
+        # 'where' faster than subarray assignment
+        data = np.where( np.isinf(self.unpin), data, self.unpin )
+        return data
+
+    def project_rows_onto_tangent_space(self, data, grads):
+        """ zero out the gradients for vec, which must be one of the anchors """
+        #del data # not with jit
+        #grads[self.idx,:] = 0.0
+        grads = np.where( np.isinf(self.unpin), grads, self.unpin )
+        return grads
+
 softPinIndexedSpec = [
     ("idx",       numba.types.int32[:]),  # list of pinned samples, of length sum(is_pinned)
     ("npin",      numba.types.int32),         # len(idx)
@@ -300,16 +363,6 @@ class SoftPinIndexed(object):
         grads[self.idx,:] = 0.0
         return grad
 
-
-hardPinSpec2d = [
-    ("pin",       numba.types.int32[:]),  # list of pinned samples, of length sum(is_pinned)
-    ("pos",       numba.types.float32),   # positions of every pinned idx.  npin x lo-D
-]
-
-anchorSpec = [
-    ("anc", numba.types.float32[::]),   # n_anchors x low-D
-    ("k", numba.types.float32[:]),      # spring constants +ve=attractive, np.inf yields "hard" pin)
-]
 
 def test_HardPinIndexed():
     samp = 5
@@ -466,4 +519,5 @@ if __name__ == "__main__":
     test_DimLohi()
     test_HardPinIndexed()
     test_SoftPinIndexed()
+    #test_PinNonif()  # TBD
 #
