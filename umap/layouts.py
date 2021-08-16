@@ -5,6 +5,7 @@ from umap.utils import tau_rand_int
 
 layout_version = 1
 from umap.constraints import DimLohi, constrain_lo, constrain_hi
+from umap.constraints import HardPinIndexed
 
 @numba.njit()
 def clip(val):
