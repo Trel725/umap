@@ -23,6 +23,26 @@ assert( constrain_lo < constrain_hi )
 # gradients, bymodify only gradients.  Perhaps it's better to call them
 # "forces" instead of "constraints".
 #
+# For example, multiplying gradients by 0 or 1 is a hard constraint,
+# nicely described by the usual view of a tangent space for gradients.
+#
+# Multiplying gradients by float values is soft.
+# Similarly, adding point-specific "spring" forces modifies the gradient,
+# and again does not really evoke the usual idea of tangent space.
+#
+
+# Multiple constraints can be supplied as a dictionary:
+# "grad"    HardPinIndexed, PinNoninf, SoftPinIndexed, Densmap
+# "point"   DimLohi, (HardPinIndexed, PinNoninf)
+# "cloud"   project_rows_onto_constraint PinNoninf,...
+# 'epoch'
+# 'pin'
+#  ...
+
+# For jit purposes, though, the constraint types must be fully known
+# This causes some issues.  Easiest for now is to supply a single
+# constraint argument of each type.   (Maybe provide a jit-compatible
+# way to compose constraints, some day?)
 
 dimLohiSpec = [
     ('lo',  numba.types.float32[:]),
@@ -227,7 +247,7 @@ class HardPinIndexed(object):
 # but keeping the indexed calls for individual row projections.
 # This replaces searching for the index with a faster lookup.
 pinNoninfSpec = [
-    ("mask",       numba.types.int32[:]),      # inf entries are unconstrained.
+    ("unpin",   numba.types.float32[:,:]),  # inf entries are unconstrained.
 ]
 
 @jitclass(pinNoninfSpec)
@@ -246,11 +266,11 @@ class PinNoninf(object):
     """
     def __init__(self, unpin):
         if not (len(unpin.shape)==2):
-            print("Warning: strange PinNoninf shape:",idx.shape)
-        self.unpin = pos[order,]
+            print("Warning: strange PinNoninf shape:",unpin.shape)
+        self.unpin = unpin
 
     def name(self):
-        return f"HardPin[{len(self.idx)}]"
+        return f"HardPin[{unpin.shape}]"
 
     def project_index_onto_constraint(self, idx, vec):
         """ If row 'idx' of self.unpin is not infinity, change vec to self.unpin value.
@@ -283,7 +303,7 @@ class PinNoninf(object):
         """ zero out the gradients for vec, which must be one of the anchors """
         #del data # not with jit
         #grads[self.idx,:] = 0.0
-        grads = np.where( np.isinf(self.unpin), grads, self.unpin )
+        grads = np.where( np.isinf(self.unpin), grads, 0 )
         return grads
 
 softPinIndexedSpec = [

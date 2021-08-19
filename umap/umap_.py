@@ -1178,12 +1178,12 @@ def simplicial_set_embedding(
 
     if euclidean_output:
         if pin_mask is None:
+            print("umap-->optimize_layout_euclidean")
             embedding = optimize_layout_euclidean(
                 embedding,
                 embedding,
                 head,
                 tail,
-                # NO pin_mask, # <--- constrained gradients
                 n_epochs,
                 n_vertices,
                 epochs_per_sample,
@@ -1205,7 +1205,6 @@ def simplicial_set_embedding(
                 embedding,
                 head,
                 tail,
-                pin_mask, # <--- constrained gradients
                 n_epochs,
                 n_vertices,
                 epochs_per_sample,
@@ -1220,6 +1219,7 @@ def simplicial_set_embedding(
                 densmap=densmap,
                 densmap_kwds=densmap_kwds,
                 move_other=True,
+                pin_mask=pin_mask, # <--- constrained gradients
             )
     else:
         embedding = optimize_layout_generic(
