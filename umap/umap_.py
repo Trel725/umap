@@ -38,7 +38,7 @@ from umap.utils import (
     fast_knn_indices,
 )
 from umap.spectral import spectral_layout
-from umap.layouts import (
+from umap.layouts2 import (
     optimize_layout_euclidean,
     optimize_layout_euclidean_masked,
     optimize_layout_generic,
@@ -1112,7 +1112,10 @@ def simplicial_set_embedding(
                 embedding = init_data
     
     if pin_mask is not None:
-        pin_mask = pin_mask.astype(np.float32,order="C")
+        if isinstance(pin_mask,dict):
+            pass
+        else: # assume pin_mask is an array or such
+            pin_mask = pin_mask.astype(np.float32,order="C")
         # DEBUG:
         #print("simplicial_set_embedding: pinned init...")
         #for i in range(init.shape[0]):
@@ -2694,9 +2697,12 @@ class UMAP(BaseEstimator):
         """
         if pin_mask is not None:
             print("X.shape", X.shape)
-            print("pin_mask.shape", pin_mask.shape)
-            assert( pin_mask.shape == init.shape
-                   or pin_mask.shape == init.shape[0] )
+            if isinstance(pin_mask, dict):
+                print("pin_mask keys", pin_mask.keys())
+            else:
+                print("pin_mask.shape", pin_mask.shape)
+                assert( pin_mask.shape == init.shape
+                       or pin_mask.shape == init.shape[0] )
             # DEBUG:
             #print("_fit_embed_data pinned init items")
             #for i in range(init.shape[0]):
