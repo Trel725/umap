@@ -26,6 +26,19 @@ _mock_zeros = np.zeros(2, dtype=np.float64)
 #   project_rows_onto_tangent_space _grads
 #    (maybe) fit_onto_constraint    _fit
 
+@numba.njit()
+def noop_pt(idx,pt):
+    pass
+@numba.njit()
+def noop_pts(pts):
+    pass
+@numba.njit()
+def noop_grad(idx,pt,grad):
+    pass
+@numba.njit()
+def noop_grads(pts,grads):
+    pass
+
 # New:  I see "inplace"-ness of operations is fragile in numba.
 #       It can vary depending on whether caller is jitted or not,
 #       and according to whether an argument is an array'view'
@@ -118,6 +131,7 @@ def freeinf_pt(idx, pt, infs):
         #if idx==13 or idx==14:
         #    print("freeinf_pt",idx,pt0,"-->",pt, infs[13],infs[14])
     return pt
+
 
 @numba.njit()
 def freeinf_pts(pts, infs=None):

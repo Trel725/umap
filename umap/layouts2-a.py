@@ -151,7 +151,6 @@ def _optimize_layout_euclidean_single_epoch(
     # constraints v.2
     #constrain_idx_pt,       # tuple( fn_call, args...)
     wrap_idx_pt,           # still yields First-class function type numba warning
-    wrap_idx_grad,
     #
     densmap_flag,
     dens_phi_sum,
@@ -179,11 +178,9 @@ def _optimize_layout_euclidean_single_epoch(
     #        #                   to zero the required gradients.
 
     #if len(constrain_idx_pt):
-    print("_optimize_layout_euclidean_single_epoch")
-    print("head,tail shapes",head_embedding.shape, tail_embedding.shape)
-    for j in [13,14]:
-        print("init head_embeding[",j,"]", head_embedding[j])
-        print("init tail_embeding[",j,"]", tail_embedding[j])
+    #for j in [13,14]:
+    #    print("init head_embeding[",j,"]", head_embedding[j])
+    #    print("init tail_embeding[",j,"]", tail_embedding[j])
     assert head_embedding.shape == tail_embedding.shape  # nice for constraints
     assert np.all(head_embedding == tail_embedding)
 
@@ -264,21 +261,18 @@ def _optimize_layout_euclidean_single_epoch(
             #    grad_d = grad_constraint.project_index_onto_tangent_space(j, current, grad_d)
             #    #if j==13 or j==14:
             #    #    print("j",j,"grad_d",grad_d)
-            current_grad = alpha * grad_d.copy()   # is the copy necessary?
-            if wrap_idx_grad is not None:
-                wrap_idx_grad(j, current, current_grad) # modify current_grad
-            current += current_grad
-            if wrap_idx_pt is not None:
+            current += grad_d * alpha
+            if True: #wrap_idx_pt is not None:
                 wrap_idx_pt(j, current)
+                #if j==13 or j==14: print(i,j,k,"wrap_idx_pt(",j,",",current, head_embedding[j])
             if move_other:
-                other_grad = -grad_d * alpha
+                grad_d = -grad_d
                 #if grad_constraint is not None:
                 #    grad_constraint.project_index_onto_tangent_space(k, other, grad_d)
-                if wrap_idx_grad is not None:
-                    wrap_idx_grad(k, other, other_grad) # modify other_grad
-                other += other_grad
-                if move_other and wrap_idx_pt is not None:
+                other += grad_d * alpha
+                if move_other:
                     wrap_idx_pt(k, other)
+                    #if k==13 or k==14: print(i,j,k,"wrap_idx_pt(",k,",",other, head_embedding[k])
 
             #if len(constrain_idx_pt):
             #    # MUST be in-place, so head_embedding gets updated
@@ -337,21 +331,21 @@ def _optimize_layout_euclidean_single_epoch(
                     grad_d = np.full(dim, 4.0)
                 #if grad_constraint is not None:
                 #    grad_constraint.project_index_onto_tangent_space(j, current, grad_d)
-                current_grad = grad_d.copy() * alpha
-                if wrap_idx_grad is not None:
-                    wrap_idx_grad(j, current, current_grad) # modify current_grad
-                current += current_grad
+                current += grad_d * alpha
 
                 #if len(constrain_idx_pt):
                 #    constrain_idx_pt[0]( j, current, *constrain_idx_pt[1:] )
                 #    if move_other:
                 #        constrain_idx_pt[0]( k, other, *constrain_idx_pt[1:] )
-                if True and wrap_idx_pt is not None:
+                if True: #wrap_idx_pt is not None:
                     wrap_idx_pt(j, current)
+                    #if j==13 or j==14: print(i,j,k,"wrap_idx_pt(",j,",",current, head_embedding[j])
                     if move_other:
-                        wrap_idx_pt(k, other) # want to maintain tail == head
+                        wrap_idx_pt(k, other)
+                        #if k==13 or k==14: print(i,j,k,"wrap_idx_pt(",k,",",other, head_embedding[k])
 
             # constraints (projection?) on current[d]?
+
             #if len(constrain_idx_pt) and j==13: print("+head13", head_embedding[13])
             #if len(constrain_idx_pt) and k==13: print("+tail13", head_embedding[13])
 
@@ -879,8 +873,8 @@ def optimize_layout_euclidean_masked(
         The optimized embedding.
     """
 
-    print("optimize_layout_euclidean_masked")
-    print("head,tail shapes",head_embedding.shape, tail_embedding.shape)
+    print("TRIAL: opt+mask+version",layout_version)
+
     dim = head_embedding.shape[1]
     #move_other = head_embedding.shape[0] == tail_embedding.shape[0]
     alpha = initial_alpha
@@ -893,7 +887,7 @@ def optimize_layout_euclidean_masked(
     #  I find dict entries are better off as single numba jit functions,
     #  to avoid the first-class function types warning.
     #  Punt some numba work to the user !
-    if False and pin_mask is not None:
+    if True and pin_mask is not None:
         # ok, let's have two constraints, to show dict functionality
         infs = np.full_like(head_embedding, np.float32(np.inf), dtype=np.float32)
         infs[13,:] = head_embedding[13,:]
@@ -911,18 +905,6 @@ def optimize_layout_euclidean_masked(
             }
             # While nice, the previous was not able to function without warnings
             # (tried for many hours)
-        elif False:
-            # This was also problematic
-            @numba.njit()
-            def con1(idx,pt):
-                con.freeinf_pt(idx,pt, infs)
-            @numba.njit()
-            def con2(idx,pt):
-                con.freeinf_pt(idx,pt, jnfs)
-            pin_mask = {
-                "idx_pt" : [con1, con2],
-            }
-            # numba "chaining" of these also had issues
         else:
             #   get rid of "list" --> it's easy enough to construct a custom one:
             @numba.njit()
@@ -940,44 +922,77 @@ def optimize_layout_euclidean_masked(
     #pin_constraint = None
     #epoch_constraint = None
     have_constraints = True
-
-    # historical:
-    # packing a list of constraints into a new one did not work reliably
     fns_idx_pt = []
-    fns_idx_grad = []
 
     if isinstance(pin_mask, dict): # pin_mask is a more generic "constraints" dictionary
         # Dictionary layout:
         #   key  -->   list( tuple )
         #   where tuple ~ (jit_function, [const_args,...]) (or empty)
-        #print("constraints", pin_mask.keys())
+        print("constraints", pin_mask.keys())
         for kk,k in enumerate(pin_mask.keys()):
             print("kk,k",kk,k)
             if k=='idx_pt':
                 if False:           # this approach doesn't work.
-                    pass # (see constraints2-a.py)
-                elif False:
-                    fns_idx_pt = pin_mask[k]
-                else: #without a list, it works fine
+                    #fns = ()
+                    #args = ()
+                    for pm_k in pin_mask[k]:
+                        fn = pm_k[0]
+                        print("pm_k fn",fn)
+                        args = pm_k[1:]
+                        print("len(args)",len(args[0]))
+                        for i in [13,14]:
+                            print("args[0][",i,"]",args[0][i])
+                    #    def f_idx_pt(idx,pt):
+                    #        fns[-1]( idx, pt, *(args[-1]) )
+                    #    #def f_idx_pt(idx,pt):
+                    #    #    pm_k[0]( idx, pt, *(pm_k[1:]) )
+                    #    #fn_k = numba.jit(f_idx_pt) # global rewritten ?!?
+                    #    fns_idx_pt.extend( [numba.jit(f_idx_pt)] )
+                        fns_idx_pt.extend( [_mk_idx_pt_fn(pm_k),] )
+                        print("now have",len(fns_idx_pt),"idx_pt constraints")
+                        print("fns_idx_pt",fns_idx_pt)
+                    #print(pin_mask[k])
+                    #for pmk in range(len(pin_mask[k])):
+                    #    print("pmk",k,pmk,"   fn",pin_mask[k][pmk][0])
+                    #    args = tuple(pin_mask[k][pmk][1:])
+                    #    for i in [13,14]:
+                    #        #print("pmk",k,pmk," args",pin_mask[k][pmk][1:][0])
+                    #        print("pmk",k,pmk," args",args[0][i])
+                    #    #for i in [13,14]:
+                    #    #    print("   args",i,pin_mask[k][pmk][1:][i])
+                    #    def f_idx_pt(idx,pt):
+                    #        args = tuple(pin_mask[k][pmk][1:])
+                    #        pin_mask[k][pmk][0]( idx, pt, *args )
+                    #    fns_idx_pt.extend( [numba.jit(f_idx_pt)] )
+                    #    print("now have",len(fns_idx_pt),"idx_pt constraints")
+                    #    print("fns_idx_pt",fns_idx_pt)
+                    #print("idx_pt", pin_mask[k][0] )
+                    #fns_idx_pt.extend( _mk_idx_pt_fn(pin_mask[k]) )
+                    #print("now have",len(fns_idx_pt),"idx_pt constraints")
+                    #print("fns_idx_pt",fns_idx_pt)
+                else:
+                    #without a list, it works fine
                     fns_idx_pt = [pin_mask[k]]
-            elif k=='idx_grad':
-                fns_idx_grad = [pin_mask[k]]
+                    #print("fns_idx_pt",fns_idx_pt)
+
             #if k=='grad': grad_constraint = pin_mask[k][0]
             #elif k=='point': point_constraint = pin_mask[k][0]
             #elif k=='pin': pin_constraint = pin_mask[k][0]
             #elif k=='epoch': epoch_constraint = pin_mask[k][0]
+            # todo: packing a list of constraints into a new one
             else:
                 print(" Warning: unrecognized constraints key", k)
                 print(" Allowed constraint keys:", recognized)
         # OH previous test runs into firstclass function warning, even
         # though all numba function signatures fully known ?
 
-        #@numba.njit()
-        #def wrap_idx_pt(idx,pt):
-        #    con.freeinf_pt( -1, pt, head_embedding ) # this is a no-op (but w/ same sig)
+        @numba.njit()
+        def wrap_idx_pt(idx,pt):
+            con.freeinf_pt( -1, pt, head_embedding ) # this is a no-op (but w/ same sig)
 
         optimize_fn = numba.njit(
             _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel,
+            #firstclass=True
         )
     else:
         have_constraints = False
@@ -991,20 +1006,33 @@ def optimize_layout_euclidean_masked(
                 if pin_mask[i,d] == 0.0:
                     print("sample",i,"pin head[",d,"] begins at",head_embedding[i,d])
 
+        # original:
+        #optimize_fn = numba.njit(
+        #    _optimize_layout_euclidean_masked_single_epoch, fastmath=True, parallel=parallel
+        #)
+
+        # NEW: boolean pin mask as a constraint
+        #      Where pin_mask zeroes the gradient, head_embedding must not change
+        #have_constraints = True
+        #pinned = np.where( pin_mask == 0, head_embedding, np.inf ).astype(np.float32)
+        ## COULD also do this as a pin_constraint, but zeroing the
+        ##       pinned gradients is all we really need.
+        #grad_constraint = PinNoninf( pinned )
+
         have_constraints = True
         # v.2 translate zeros in pin_mask to embedding values; nonzeros become np.inf
         freeinf_arg = np.where( pin_mask == 0.0, head_embedding, np.float32(np.inf) )
         # original approach
-        @numba.njit()
-        def pin_mask_constraint(idx,pt):
-            con.freeinf_pt( idx, pt, freeinf_arg )
-        fns_idx_pt = [pin_mask_constraint,]
-        # OR mirror a tuple-based approach
-        #pin_mask_constraint_tuple = (con.freeinf_pt, freeinf_arg,)
         #@numba.njit()
-        #def pin_mask_constraint2(idx,pt):
-        #    pin_mask_constraint_tuple[0]( idx, pt, *pin_mask_constraint_tuple[1:] )
-        #fns_idx_pt += (pin_mask_constraint2,)
+        #def pin_mask_constraint(idx,pt):
+        #    con.freeinf_pt( idx, pt, freeinf_arg )
+        #fns_idx_pt += (pin_mask_constraint,)
+        # OR mirror a tuple-based approach
+        pin_mask_constraint_tuple = (con.freeinf_pt, freeinf_arg,)
+        @numba.njit()
+        def pin_mask_constraint2(idx,pt):
+            pin_mask_constraint_tuple[0]( idx, pt, *pin_mask_constraint_tuple[1:] )
+        fns_idx_pt += (pin_mask_constraint2,)
 
         optimize_fn = numba.njit(
             _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel,
@@ -1013,16 +1041,7 @@ def optimize_layout_euclidean_masked(
 
     # call a tuple of jit functions(idx,pt) in sequential order
     print("fns_idx_pt",fns_idx_pt)
-    # Note: _chain_idx_pt has some numba issues
-    #       todo: get rid of list fns_idx_pt etc (not useful)
-    wrap_idx_pt = None # or con.noop_pt
-    wrap_idx_grad = None # or con.noop_grad
-    if len(fns_idx_pt):
-        #wrap_idx_pt = _chain_idx_pt( fns_idx_pt )
-        wrap_idx_pt = fns_idx_pt[0]
-    if len(fns_idx_grad):
-        #wrap_idx_grad = _chain_idx_grad( fns_idx_pt )
-        wrap_idx_grad = fns_idx_grad[0]
+    wrap_idx_pt = _chain_idx_pt( fns_idx_pt )
 
     if densmap:
         dens_init_fn = numba.njit(
@@ -1099,7 +1118,6 @@ def optimize_layout_euclidean_masked(
                 n,
                 #constrain_idx_pt,
                 wrap_idx_pt,
-                wrap_idx_grad,
                 densmap_flag,
                 dens_phi_sum,
                 dens_re_sum,
