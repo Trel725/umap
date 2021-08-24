@@ -179,11 +179,11 @@ def _optimize_layout_euclidean_single_epoch(
     #        #                   to zero the required gradients.
 
     #if len(constrain_idx_pt):
-    print("_optimize_layout_euclidean_single_epoch")
-    print("head,tail shapes",head_embedding.shape, tail_embedding.shape)
-    for j in [13,14]:
-        print("init head_embeding[",j,"]", head_embedding[j])
-        print("init tail_embeding[",j,"]", tail_embedding[j])
+    #print("_optimize_layout_euclidean_single_epoch")
+    #print("head,tail shapes",head_embedding.shape, tail_embedding.shape)
+    #for j in [13,14]:
+    #    print("init head_embeding[",j,"]", head_embedding[j])
+    #    print("init tail_embeding[",j,"]", tail_embedding[j])
     assert head_embedding.shape == tail_embedding.shape  # nice for constraints
     assert np.all(head_embedding == tail_embedding)
 
@@ -267,7 +267,9 @@ def _optimize_layout_euclidean_single_epoch(
             current_grad = alpha * grad_d.copy()   # is the copy necessary?
             if wrap_idx_grad is not None:
                 wrap_idx_grad(j, current, current_grad) # modify current_grad
+                current_grad = clip_array(current_grad)
             current += current_grad
+
             if wrap_idx_pt is not None:
                 wrap_idx_pt(j, current)
             if move_other:
@@ -276,6 +278,7 @@ def _optimize_layout_euclidean_single_epoch(
                 #    grad_constraint.project_index_onto_tangent_space(k, other, grad_d)
                 if wrap_idx_grad is not None:
                     wrap_idx_grad(k, other, other_grad) # modify other_grad
+                    current_grad = clip_array(other_grad)
                 other += other_grad
                 if move_other and wrap_idx_pt is not None:
                     wrap_idx_pt(k, other)
@@ -340,6 +343,7 @@ def _optimize_layout_euclidean_single_epoch(
                 current_grad = grad_d.copy() * alpha
                 if wrap_idx_grad is not None:
                     wrap_idx_grad(j, current, current_grad) # modify current_grad
+                    current_grad = clip_array(current_grad)
                 current += current_grad
 
                 #if len(constrain_idx_pt):

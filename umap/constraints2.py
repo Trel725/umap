@@ -3,8 +3,8 @@ import numba
 from numba.experimental import jitclass
 
 # A very liberal constraint ...
-constrain_lo = np.float32(-5.0)
-constrain_hi = np.float32(+5.0)
+constrain_lo = np.float32(-10.0)
+constrain_hi = np.float32(+10.0)
 assert( constrain_lo < constrain_hi )
 _mock_los = np.full(2, constrain_lo, dtype=np.float64)
 _mock_his = np.full(2, constrain_hi, dtype=np.float64)
@@ -28,16 +28,16 @@ _mock_zeros = np.zeros(2, dtype=np.float64)
 
 @numba.njit()
 def noop_pt(idx,pt):
-    pass
+    return pt
 @numba.njit()
 def noop_pts(pts):
-    pass
+    return pts
 @numba.njit()
 def noop_grad(idx,pt,grad):
-    pass
+    return grad
 @numba.njit()
 def noop_grads(pts,grads):
-    pass
+    return grads
 
 # New:  I see "inplace"-ness of operations is fragile in numba.
 #       It can vary depending on whether caller is jitted or not,
@@ -85,7 +85,7 @@ def pinindexed_pt(idx, pt, pin_idx=None, pin_pos=None):
     i = np.searchsorted( pin_idx, idx )         # binary search (uggh)
     if i < pin_idx.size and pin_idx[i] == idx:
         pt[:] = pin_pos[i,:]
-        print("pinindexed pt: i",i,"-->", pt)
+        #print("pinindexed pt: i",i,"-->", pt)
     #else:
     #    print("pinindexed pt: i",i,"--> no-op")
     return pt
@@ -193,14 +193,19 @@ def springindexed_grad(idx, pt, grad, pin_idx=None, pin_pos=None, springs=None):
     i = np.searchsorted(pin_idx, idx)
     if i < pin_idx.size and pin_idx[i] == idx:
         if springs[i] == np.inf:
+            #pt[:] = pin_pos[i]  (assume this holds)
             grad[:] = 0.0
         else:
-            delta = pt - pin_pos[i]
+            delta = pin_pos[i] - pt
             #dist2 = np.sum(np.square(delta))
             #dist = np.sqrt(dist2)
-            #grad += (springs[i] * dist2) * (delta / np.sqrt(dist2))
             dist = np.sqrt(np.sum(np.square(delta)))
-            grad[:] += (springs[i] * dist) * delta
+            #corr = (springs[i] * dist2) * (delta / np.sqrt(dist2))
+            #corr = (springs[i] * dist) * delta
+            #corr = np.where( corr > 4.0, 4.0,
+            #                np.where( corr < -4.0, -4.0, corr))
+            #grad[:] += corr
+            grad += (springs[i] * dist) * delta
     return grad
 
 @numba.njit()
@@ -211,12 +216,11 @@ def springindexed_grads(pts, grads, pin_idx=None, pin_pos=None, springs=None):
             # alt is to cap springs[i] and have a real force
             grads[idx,:] = 0.0
         else:
-            delta = pts[idx,:] - pin_pos[i]
+            delta = pin_pos[i] - pts[idx,:]
             dist = np.sqrt(np.sum(np.square(delta)))
             grads[idx,:] += (springs[i] * dist) * delta
     return grads
 
-@numba.njit()
 def test_dimlohi():
     x = np.empty( (8,8), dtype=np.float32)
     for i in range(8):
@@ -262,7 +266,6 @@ def test_dimlohi():
                 assert( x2[i,d] == i*8 + d )
     print("test dimlohi OK")
 
-@numba.njit()
 def test_pinindexed():
     # In this test, many things OK without numba create problems when jitted
     #   Ex. "in-place" operations often did not work.
@@ -311,9 +314,10 @@ def test_pinindexed():
     #print("tupargs 2'",tupargs)
     #print("x_ind 2",x_ind) # <--- value has changed!
     #print("x_pos 2",x_pos)
-    #print("y2",y)
+    #print("y 2",y)
     assert np.all(y == -1.0)
-    assert np.all(x0 == x[0,:]) # inplace MIGHT NOT HAPPEN !
+    #  assert np.all(x0 == x[0,:])   # inplace did not happen (oops)
+    assert np.all(x0 == x_pos[0,:])  # inplace happens
 
     #print("x_ind",x_ind)
     #print("x_pos",x_pos)
@@ -368,7 +372,6 @@ def test_pinindexed():
     assert np.all( y[7,:] == 1.0 )
     print("test pinindexed OK")
 
-@numba.njit()
 def test_freeinf():
     samp = 5
     dim  = 3
@@ -551,8 +554,14 @@ def test_springindexed():
     print("test springindexed OK")
 
 if __name__ == "__main__":
-    #test_dimlohi()
-    #test_pinindexed()
+    test_dimlohi()
+    test_pinindexed()
     test_freeinf()
-    #test_springindexed()
+    test_springindexed()
+    print("jitted test functions...")
+    numba.njit(test_dimlohi)()
+    numba.njit(test_pinindexed)()
+    numba.njit(test_freeinf)()
+    numba.njit(test_springindexed)()
+
 #
