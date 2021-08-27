@@ -300,7 +300,7 @@ def _optimize_layout_euclidean_single_epoch(
                     wrap_idx_grad(j, current, current_grad) # modify current_grad
                     current_grad = clip_array(current_grad)
                 current += alpha * current_grad
-                if True and wrap_idx_pt is not None:
+                if wrap_idx_pt is not None:
                     wrap_idx_pt(j, current)
 
                 # following is needed for correctness if tail==head

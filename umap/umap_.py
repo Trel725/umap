@@ -2767,7 +2767,7 @@ class UMAP(BaseEstimator):
             self.verbose,
         )
 
-    def fit_transform(self, X, y=None, output_constrain=None):
+    def fit_transform(self, X, y=None, data_constrain=None):
         """Fit X into an embedded space and return that transformed
         output.
 
@@ -2783,7 +2783,7 @@ class UMAP(BaseEstimator):
             The relevant attributes are ``target_metric`` and
             ``target_metric_kwds``.
 
-        output_constrain : array, shape (n_samples) or None
+        data_constrain : array, shape (n_samples) or None
             A mask used for pinning points in the embedding. It should be an array
             of weights in [0,1] (one weight per point), defining how much points
             will be updated from their initial position: 0 means the point will be
@@ -2807,7 +2807,7 @@ class UMAP(BaseEstimator):
         r_emb: array, shape (n_samples)
             Local radii of data points in the embedding (log-transformed).
         """
-        self.fit(X, y, output_constrain)
+        self.fit(X, y, data_constrain)
         if self.transform_mode == "embedding":
             if self.output_dens:
                 return self.embedding_, self.rad_orig_, self.rad_emb_
