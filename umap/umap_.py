@@ -976,7 +976,9 @@ def simplicial_set_embedding(
 
     output_constrain : (default None) or dict of point constraints that operate
         independent of any data set.  For example, sub-manifold projections.
-        TBD.
+        original source: UMAP constructor
+        keys (string)  : pt, grad, epoch_pts, final_pts
+        values         : fn(pt) fn(pt,grad) fn(pts) [not yet fn(pts,grads)]
        
     data_constrain : array, shape (n_samples) or (n_samples, n_components) or None
         A mask used for pinning points in the embedding. It should be an array
@@ -989,8 +991,9 @@ def simplicial_set_embedding(
         to each dimension of each sample.
         OR
         a dict of constraint functions taking a data index argument.
-        This comes as a parameter to the 'fit' method.
-        Probably it should be available in 'update' too ?
+        original source: 'fit' or 'fit_transform'
+        keys (string)  : idx_pt, idx_grad
+        values         : fn(idx,pt), fn(idx,pt,grad) [not yet fn(pts), fn(pts, grads)]
 
     negative_sample_rate: int (optional, default 5)
         The number of negative samples to select per positive sample
@@ -2281,7 +2284,9 @@ class UMAP(BaseEstimator):
             OR
             a dict of constraints that can use the index of X for point-specific
             constraints (like pinning).  This expands on what self.output_constrain 
-            is capable of
+            is capable of.
+            keys (string)  : idx_pt, idx_grad
+            values         : fn(idx,pt), fn(idx,pt,grad) [not yet fn(pts), fn(pts, grads)]
         """
 
         X = check_array(X, dtype=np.float32, accept_sparse="csr", order="C")
@@ -2795,6 +2800,11 @@ class UMAP(BaseEstimator):
             numpy array for the initial embedding positions (``init`` parameter of
             the ``UMAP`` class).  A 2-D mask can supply different updating weight
             to each dimension of each sample.
+            OR
+            a dict of constraint functions taking a data index argument.
+            original source: 'fit' or 'fit_transform'
+            keys (string)  : idx_pt, idx_grad
+            values         : fn(idx,pt), fn(idx,pt,grad) [not yet fn(pts), fn(pts, grads)]
 
         Returns
         -------
