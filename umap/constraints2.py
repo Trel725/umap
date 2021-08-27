@@ -2,6 +2,57 @@ import numpy as np
 import numba
 from numba.experimental import jitclass
 
+#
+# There are 2 broad class of constraint:
+#
+#  i) UMAP constructor can take submanifold projection functions.
+#     These operate independent of any particular data set,
+#     and are not passed the dataset point number as their 1st function arg.
+#        Ex. fn(pt), fn(pts), fn(pt,grad) or fn(pts,grads)
+#            where pts, grads could be any number of points.
+# ii) 'fit' constructor (perhaps 'fit_transform') can take dataset-specific
+#     constraints.  These take a dataset index as a 1st argument.  They also
+#     have a variant that may operate on the full point cloud at once.
+#        Ex. fn(idx,pt), fn(pts), fn(idx,pt,grad) or fn(pts, grads)
+#            where pts, grads match the number of points in the data set.
+#
+# Each constraint has a spec describing constraint data set up by constructors
+# Constraints typically apply as low-dimensional embeddings are optimized.
+#
+# Using jitclass, many "usability features" of python are not available,
+# so more care needs to be taken to construct with right-typed arguments.
+# layouts.py requires in-place mods, so be careful about '=' operator.
+#
+# "Hard" constraints, enforcing an inequality or equality condition, are fairly
+# straight-forward.  "Soft" constraints really behave as "auxiliary forces" and
+# can be through of as additional "tendencies" or "hints" or "regressions".
+#
+# So Hard constraints will have projections of points, and of gradients onto
+# the tangent plane; whereas Soft constraints will generally only affect
+# gradients.  Soft constraints are more aking to "forces" than "constraints".
+#
+# For example, multiplying gradients by 0 or 1 is a hard constraint,
+# nicely described by the usual view of a tangent space for gradients.
+# For tangent space, we assume the points already satisfy the constraint.
+#
+# Multiplying gradients by float values is soft.
+# Similarly, adding point-specific "spring" forces modifies the gradient,
+# and again does not really evoke the usual idea of tangent space.
+#
+
+# Multiple constraints can be supplied as a dictionary:
+# "grad"    HardPinIndexed, PinNoninf, SoftPinIndexed, Densmap
+# "point"   DimLohi, (HardPinIndexed, PinNoninf)
+# "cloud"   project_rows_onto_constraint PinNoninf,...
+# 'epoch'
+# 'pin'
+#  ...
+
+# For jit purposes, though, the constraint types must be fully known
+# This causes some issues.  Easiest for now is to supply a single
+# constraint argument of each type.   (Maybe provide a jit-compatible
+# way to compose constraints, some day?)
+
 # A very liberal constraint ...
 constrain_lo = np.float32(-10.0)
 constrain_hi = np.float32(+10.0)
@@ -18,13 +69,15 @@ _mock_zeros = np.zeros(2, dtype=np.float64)
 # are passed as a tuple (of constraint_kwds 
 
 # The class methods become function name suffixes
-#   class method                    suffix
-#   ------------------------------  -------
-#   project_onto_constraint         _pt
-#   project_rows_onto_constraint    _pts
-#   project_onto_tangent_space      _grad
-#   project_rows_onto_tangent_space _grads
-#    (maybe) fit_onto_constraint    _fit
+#   class method                    suffix      args
+#   ------------------------------  -------     ----
+#   project_onto_constraint         _pt         idx, pt
+#   project_rows_onto_constraint    _pts        pts
+#   project_onto_tangent_space      _grad       idx, pt, grad
+#   project_rows_onto_tangent_space _grads      grads
+#    (maybe) fit_onto_constraint    _fit        pts (?)
+# for dataset-agnostic projectors (supplied to UMAP constructor) the
+# 'idx' argument is dropped.
 
 @numba.njit()
 def noop_pt(idx,pt):

@@ -4,7 +4,7 @@ import umap.distances as dist
 from umap.utils import tau_rand_int
 import umap.constraints2 as con
 
-layout_version = 2
+layout_version = 3
 #from umap.constraints import DimLohi, constrain_lo, constrain_hi
 #from umap.constraints import HardPinIndexed, PinNoninf
 

@@ -38,9 +38,8 @@ from umap.utils import (
     fast_knn_indices,
 )
 from umap.spectral import spectral_layout
-from umap.layouts2 import (
+from umap.layouts import (
     optimize_layout_euclidean,
-    optimize_layout_euclidean_masked,
     optimize_layout_generic,
     optimize_layout_inverse,
 )
@@ -940,7 +939,8 @@ def simplicial_set_embedding(
     output_metric=dist.named_distances_with_gradients["euclidean"],
     output_metric_kwds={},
     euclidean_output=True,
-    pin_mask=None,
+    output_constrain=None, # generic embedding space constraints (TBD)
+    data_constrain=None,   # data-specific constraints
     parallel=False,
     verbose=False,
 ):
@@ -974,7 +974,11 @@ def simplicial_set_embedding(
     gamma: float
         Weight to apply to negative samples.
 
-    pin_mask : array, shape (n_samples) or (n_samples, n_components) or None
+    output_constrain : (default None) or dict of point constraints that operate
+        independent of any data set.  For example, sub-manifold projections.
+        TBD.
+       
+    data_constrain : array, shape (n_samples) or (n_samples, n_components) or None
         A mask used for pinning points in the embedding. It should be an array
         of weights in [0,1] (one weight per point), defining how much points
         will be updated from their initial position: 0 means the point will be
@@ -983,6 +987,10 @@ def simplicial_set_embedding(
         numpy array for the initial embedding positions (``init`` parameter of
         the ``UMAP`` class).  A 2-D mask can supply different updating weight
         to each dimension of each sample.
+        OR
+        a dict of constraint functions taking a data index argument.
+        This comes as a parameter to the 'fit' method.
+        Probably it should be available in 'update' too ?
 
     negative_sample_rate: int (optional, default 5)
         The number of negative samples to select per positive sample
@@ -1111,16 +1119,16 @@ def simplicial_set_embedding(
             else:
                 embedding = init_data
     
-    if pin_mask is not None:
-        if isinstance(pin_mask,dict):
+    if data_constrain is not None:
+        if isinstance(data_constrain,dict):
             pass
-        else: # assume pin_mask is an array or such
-            pin_mask = pin_mask.astype(np.float32,order="C")
+        else: # assume data_constrain is an array or such
+            data_constrain = data_constrain.astype(np.float32,order="C")
         # DEBUG:
         #print("simplicial_set_embedding: pinned init...")
         #for i in range(init.shape[0]):
-        #    if np.any(pin_mask[i,] == 0.0):
-        #        print("sample",i,"pins",pin_mask[i,],"init",init[i,])
+        #    if np.any(data_constrain[i,] == 0.0):
+        #        print("sample",i,"pins",data_constrain[i,],"init",init[i,])
 
     epochs_per_sample = make_epochs_per_sample(graph.data, n_epochs)
 
@@ -1164,9 +1172,9 @@ def simplicial_set_embedding(
         if output_dens:
             aux_data["rad_orig"] = ro
 
-    # if pin_mask specified an init array, we must NOT rescale it
+    # if data_constrain specified an init array, we must NOT rescale it
     # This well-meaning rescale may also be incompatible with "constraint objects"
-    if euclidean_output and pin_mask is None:
+    if euclidean_output and data_constrain is None:
         # o.w. rescale embedding to range [0.,10.] (why not [-10.,10.]?)
         # This rescale is PER LOW EMBEDDING DIMENSION, which seems VERY BAD.
         #   (because this changes relative distances in a rotationally variant way)
@@ -1180,50 +1188,30 @@ def simplicial_set_embedding(
         embedding = embedding.astype(np.float32,order="C")
 
     if euclidean_output:
-        if pin_mask is None:
-            print("umap-->optimize_layout_euclidean")
-            embedding = optimize_layout_euclidean(
-                embedding,
-                embedding,
-                head,
-                tail,
-                n_epochs,
-                n_vertices,
-                epochs_per_sample,
-                a,
-                b,
-                rng_state,
-                gamma,
-                initial_alpha,
-                negative_sample_rate,
-                parallel=parallel,
-                verbose=verbose,
-                densmap=densmap,
-                densmap_kwds=densmap_kwds,
-                move_other=True,
-            )
-        else:
-            embedding = optimize_layout_euclidean_masked(
-                embedding,
-                embedding,
-                head,
-                tail,
-                n_epochs,
-                n_vertices,
-                epochs_per_sample,
-                a,
-                b,
-                rng_state,
-                gamma,
-                initial_alpha,
-                negative_sample_rate,
-                parallel=parallel,
-                verbose=verbose,
-                densmap=densmap,
-                densmap_kwds=densmap_kwds,
-                move_other=True,
-                pin_mask=pin_mask, # <--- constrained gradients
-            )
+        # [ejk] optimize_layout_euclidean now "just works" with data_constrain=None
+        embedding = optimize_layout_euclidean(
+            embedding,
+            embedding,
+            head,
+            tail,
+            n_epochs,
+            n_vertices,
+            epochs_per_sample,
+            a,
+            b,
+            rng_state,
+            gamma,
+            initial_alpha,
+            negative_sample_rate,
+            parallel=parallel,
+            verbose=verbose,
+            densmap=densmap,
+            densmap_kwds=densmap_kwds,
+            move_other=True,
+            output_constrain=output_constrain, # TBD
+            #data_constrain=data_constrain,   # data-specific constraints
+            pin_mask=data_constrain, # None, or constraint dict, or array
+        )
     else:
         embedding = optimize_layout_generic(
             embedding,
@@ -1243,6 +1231,8 @@ def simplicial_set_embedding(
             tuple(output_metric_kwds.values()),
             verbose=verbose,
             move_other=True,
+            # XXX constraints ought to be allowed for other output metrics,
+            # but after we've provided some examples
         )
     if output_dens:
         if verbose:
@@ -1467,6 +1457,23 @@ class UMAP(BaseEstimator):
         time care must be taken and dictionary elements must be ordered
         appropriately; this will hopefully be fixed in the future.
 
+    output_metric or function (optional, default 'euclidean')
+        Like 'metric' and 'metric_kwds', you can specify a metric for the low
+        dimensional space, using 'output_metric' and 'output_metric_kwds'.
+        (TBD) Additionally, you may specify:
+            output_constrain: (optional, default None)
+        A dictionary of constraints, or a (TBD: 1- or) 2-D "pin_mask" array of
+        0/1 values.  For now supported for euclidean target metric.
+        These can be point projections, tangent space projection, or even
+        "soft" constraints operating as gradient modifiers.
+        Note that output_constrain *cannot* handle only point-specific
+        constraints. (pinning points must use constraints passed directly
+        to the 'fit' method)
+        What *can* (/might) be handled are generic projections onto a predefined
+        sub-manifold of the euclidean output space.
+        See constraints.py for dictionary layout and example constraints.
+        (TBD fuller output_constrain description, when it's working)
+
     n_epochs: int (optional, default None)
         The number of training epochs to be used in optimizing the
         low dimensional embedding. Larger values result in more accurate
@@ -1644,6 +1651,7 @@ class UMAP(BaseEstimator):
         metric_kwds=None,
         output_metric="euclidean",
         output_metric_kwds=None,
+        output_constrain=None,
         n_epochs=None,
         learning_rate=1.0,
         init="spectral",
@@ -1678,10 +1686,11 @@ class UMAP(BaseEstimator):
     ):
         self.n_neighbors = n_neighbors
         self.metric = metric
-        self.output_metric = output_metric
-        self.target_metric = target_metric
         self.metric_kwds = metric_kwds
+        self.output_metric = output_metric
+        #self.target_metric = target_metric
         self.output_metric_kwds = output_metric_kwds
+        self.output_constrain = output_constrain
         self.n_epochs = n_epochs
         self.init = init
         self.n_components = n_components
@@ -1742,6 +1751,8 @@ class UMAP(BaseEstimator):
             raise ValueError("init ndarray must match n_components value")
         if not isinstance(self.metric, str) and not callable(self.metric):
             raise ValueError("metric must be string or callable")
+        if not isinstance(self.output_metric, str) and not callable(self.output_metric):
+            raise ValueError("output_metric must be string or callable")
         if self.negative_sample_rate < 0:
             raise ValueError("negative sample rate must be positive")
         if self._initial_alpha < 0.0:
@@ -1855,6 +1866,13 @@ class UMAP(BaseEstimator):
             self._inverse_distance_func = None
         else:
             raise ValueError("metric is neither callable nor a recognised string")
+
+        if self.output_constrain is not None:
+            if self.metric != "euclidean":
+                raise ValueError("For now we allow output constraints only for output_metric 'euclidean'")
+            if not isinstance(self.output_constrain, dict):
+                raise ValueError("output_constrain must be a dictionary")
+
         # set output distance metric
         if callable(self.output_metric):
             out_returns_grad = self._check_custom_metric(
@@ -2055,15 +2073,16 @@ class UMAP(BaseEstimator):
             n_epochs,
             init,
             check_random_state(42),
-            "euclidean",
-            {},
+            "euclidean", # metric
+            {},          # metric_kwds
             result.densmap,
             result._densmap_kwds,
             result.output_dens,
             # output_metric : default "euclidean"
             # output_metric_kwds : default {}
             # euclidean_output : default True
-            # pin_mask : default None
+            # self.output_constrain?  : default None
+            # data_constrain : default None
             parallel=False,
             verbose=bool(np.max(result.verbose)),
         )
@@ -2136,7 +2155,8 @@ class UMAP(BaseEstimator):
             # output_metric : default "euclidean"
             # output_metric_kwds : default {}
             # euclidean_output : default True
-            # pin_mask : default None
+            # output_constrain : default None
+            # data_constrain : default None
             parallel=False,
             verbose=bool(np.max(result.verbose)),
         )
@@ -2211,7 +2231,8 @@ class UMAP(BaseEstimator):
             # output_metric : default "euclidean"
             # output_metric_kwds : default {}
             # euclidean_output : default True
-            # pin_mask : default None
+            # output_constrain : default None
+            # data_constrain : default None
             parallel=False,
             verbose=bool(np.max(result.verbose)),
         )
@@ -2222,7 +2243,7 @@ class UMAP(BaseEstimator):
 
         return result
 
-    def fit(self, X, y=None, pin_mask=None):
+    def fit(self, X, y=None, data_constrain=None):
         """Fit X into an embedded space.
 
         Optionally use y for supervised dimension reduction.
@@ -2241,15 +2262,23 @@ class UMAP(BaseEstimator):
             The relevant attributes are ``target_metric`` and
             ``target_metric_kwds``.
 
-        pin_mask : array, shape (n_samples) or None
-            A mask used for pinning points in the embedding. It should be an array
-            of weights in [0,1] (one weight per point), defining how much points
-            will be updated from their initial position: 0 means the point will be
-            pinned (fixed), 1 means it will be updated normally, and in-between
-            values allow for soft-pinning. This argument is useful when providing a
+        data_constrain : array, shape (n_samples) or None
+            Describe constraints on embedded points.  Unlike self.output_constrain,
+            these constraints allow a point index parameter, so things like
+            pinning particular points of X becomes possible.
+            Format:
+            TBD It can be an array of weights in [0,1] (one weight per point),
+            defining how much points will be updated from their initial
+            position: 0 means the point will be pinned (fixed), 1 means it will
+            be updated normally, and in-between values allow for soft-pinning.
+            This argument is useful when providing a
             numpy array for the initial embedding positions (``init`` parameter of
-            the ``UMAP`` class).  A 2-D mask can supply different updating weight
+            the ``UMAP`` class).  A 2-D 0/1 mask can supply different updating weight
             to each dimension of each sample.
+            OR
+            a dict of constraints that can use the index of X for point-specific
+            constraints (like pinning).  This expands on what self.output_constrain 
+            is capable of
         """
 
         X = check_array(X, dtype=np.float32, accept_sparse="csr", order="C")
@@ -2265,11 +2294,11 @@ class UMAP(BaseEstimator):
         if isinstance(self.init, np.ndarray):
             init = check_array(self.init, dtype=np.float32, accept_sparse=False)
             # DEBUG:
-            #if pin_mask is not None:
+            #if data_constrain is not None:
             #    print("debug fit pinned init items")
             #    for i in range(init.shape[0]):
-            #        if np.any(pin_mask[i,] == 0.0):
-            #            print("sample",i,"pins",pin_mask[i,],"init",init[i,])
+            #        if np.any(data_constrain[i,] == 0.0):
+            #            print("sample",i,"pins",data_constrain[i,],"init",init[i,])
         else:
             init = self.init
 
@@ -2666,7 +2695,7 @@ class UMAP(BaseEstimator):
                 self.n_epochs,
                 init,
                 random_state,  # JH why raw data?
-                pin_mask
+                data_constrain, # may use point index as information
             )
             # Assign any points that are fully disconnected from our manifold(s) to have embedding
             # coordinates of np.nan.  These will be filtered by our plotting functions automatically.
@@ -2691,23 +2720,26 @@ class UMAP(BaseEstimator):
 
         return self
 
-    def _fit_embed_data(self, X, n_epochs, init, random_state, pin_mask):
+    def _fit_embed_data(self, X, n_epochs, init, random_state, data_constrain):
         """A method wrapper for simplicial_set_embedding that can be
         replaced by subclasses.
         """
-        if pin_mask is not None:
+        if data_constrain is not None:
             print("X.shape", X.shape)
-            if isinstance(pin_mask, dict):
-                print("pin_mask keys", pin_mask.keys())
+            if isinstance(data_constrain, dict):
+                print("data_constrain keys", data_constrain.keys())
             else:
-                print("pin_mask.shape", pin_mask.shape)
-                assert( pin_mask.shape == init.shape
-                       or pin_mask.shape == init.shape[0] )
-            # DEBUG:
-            #print("_fit_embed_data pinned init items")
-            #for i in range(init.shape[0]):
-            #    if np.any(pin_mask[i,] == 0.0):
-            #        print("sample",i,"pins",pin_mask[i,],"init",init[i,])
+                print("data_constrain.shape", data_constrain.shape)
+                assert( data_constrain.shape == init.shape
+                       or data_constrain.shape == init.shape[0] )
+                # DEBUG:
+                #print("_fit_embed_data pinned init items")
+                #for i in range(init.shape[0]):
+                #    if np.any(data_constrain[i,] == 0.0):
+                #        print("sample",i,"pins",data_constrain[i,],"init",init[i,])
+        if self.output_constrain is not None:
+            # _validate_parameters ensures it must be a dict
+            print("output_constrain keys", data_constrain.keys())
 
         return simplicial_set_embedding(
             X,
@@ -2729,12 +2761,13 @@ class UMAP(BaseEstimator):
             self._output_distance_func,
             self._output_metric_kwds,
             self.output_metric in ("euclidean", "l2"), # euclidean_output?
-            pin_mask,
+            self.output_constrain, # slide this one in automatically.  Ignored, for now
+            data_constrain, # project points knowing index in X
             self.random_state is None, # parallel?
             self.verbose,
         )
 
-    def fit_transform(self, X, y=None, pin_mask=None):
+    def fit_transform(self, X, y=None, output_constrain=None):
         """Fit X into an embedded space and return that transformed
         output.
 
@@ -2750,7 +2783,7 @@ class UMAP(BaseEstimator):
             The relevant attributes are ``target_metric`` and
             ``target_metric_kwds``.
 
-        pin_mask : array, shape (n_samples) or None
+        output_constrain : array, shape (n_samples) or None
             A mask used for pinning points in the embedding. It should be an array
             of weights in [0,1] (one weight per point), defining how much points
             will be updated from their initial position: 0 means the point will be
@@ -2774,7 +2807,7 @@ class UMAP(BaseEstimator):
         r_emb: array, shape (n_samples)
             Local radii of data points in the embedding (log-transformed).
         """
-        self.fit(X, y, pin_mask)
+        self.fit(X, y, output_constrain)
         if self.transform_mode == "embedding":
             if self.output_dens:
                 return self.embedding_, self.rad_orig_, self.rad_emb_
@@ -2954,11 +2987,6 @@ class UMAP(BaseEstimator):
         tail = graph.col
         weight = graph.data
 
-        # optimize_layout = make_optimize_layout(
-        #     self._output_distance_func,
-        #     tuple(self.output_metric_kwds.values()),
-        # )
-
         if self.output_metric == "euclidean":
             embedding = optimize_layout_euclidean(
                 embedding,
@@ -2971,11 +2999,16 @@ class UMAP(BaseEstimator):
                 self._a,
                 self._b,
                 rng_state,
-                self.repulsion_strength,
-                self._initial_alpha / 4.0,
+                self.repulsion_strength, # gamma
+                self._initial_alpha / 4.0, # initial_alpha
                 self.negative_sample_rate,
-                self.random_state is None,
+                self.random_state is None, # parallel
                 verbose=self.verbose,
+                #densmap=False,
+                #densmap_kwds={},
+                #move_other=False,
+                #output_constrain=None
+                #pin_mask=None
             )
         else:
             embedding = optimize_layout_generic(
@@ -3307,7 +3340,8 @@ class UMAP(BaseEstimator):
                 self._output_distance_func,
                 self._output_metric_kwds,
                 self.output_metric in ("euclidean", "l2"),
-                None, # pin_mask
+                None, # output_constrain
+                None, # data_constrain
                 self.random_state is None,
                 self.verbose,
             )
@@ -3373,7 +3407,8 @@ class UMAP(BaseEstimator):
                 self._output_distance_func,
                 self._output_metric_kwds,
                 self.output_metric in ("euclidean", "l2"),
-                None, # pin_mask
+                None, # output_constrain
+                None, # data_constrain
                 self.random_state is None,
                 self.verbose,
             )

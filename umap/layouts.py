@@ -2,10 +2,12 @@ import numpy as np
 import numba
 import umap.distances as dist
 from umap.utils import tau_rand_int
+import umap.constraints as con
 
-layout_version = 1
-from umap.constraints import DimLohi, constrain_lo, constrain_hi
-from umap.constraints import HardPinIndexed, PinNoninf
+layout_version = 3
+#from umap.constraints import DimLohi, constrain_lo, constrain_hi
+#from umap.constraints import HardPinIndexed, PinNoninf
+
 
 @numba.njit()
 def clip(val):
@@ -64,6 +66,64 @@ def rdist(x, y):
 
     return result
 
+# Workaround:
+# compose tuple of jitted fns(idx,pt)
+# This avoid numba 0.53 "experimental" passing functions warnings.
+#
+# When numba 0.53 is required, this hackery is not required
+# ref: https://github.com/numba/numba/issues/3405  and older 2542
+# 
+@numba.njit()
+def _fn_idx_pt_noop(idx,pt):
+    return None
+def _chain_idx_pt(fs, inner=None):
+    """for f(idx,pt) in tuple fs, invoke them in order"""
+    if len(fs) == 0:
+        assert inner is None
+        return _fn_idx_pt_noop
+    head = fs[0]
+    if inner is None:
+        @numba.njit()
+        def wrap(idx,pt):
+            head(idx,pt)
+        return wrap
+    else:
+        @numba.njit()
+        def wrap(idx,pt):
+            inner(idx,pt)
+            head(idx,pt)
+    if len(fs) > 1:
+        tail = fs[1:]
+        return _chain_idx_pt(tail, wrap)
+    else:
+        return wrap
+# Now to chain jit fns that don't need an index
+# Ex. numba wrappers for dimlohi_pt(pt, los, his) in constraints.py
+@numba.njit()
+def _fn_pt_noop(pt):
+    return None
+def _chain_pt(fs, inner=None):
+    """for f(idx,pt) in tuple fs, invoke them in order"""
+    if len(fs) == 0:
+        assert inner is None
+        return _fn_pt_noop
+    head = fs[0]
+    if inner is None:
+        @numba.njit()
+        def wrap(pt):
+            head(pt)
+    else:
+        @numba.njit()
+        def wrap(pt):
+            inner(pt)
+            head(pt)
+    if len(fs) > 1:
+        tail = fs[1:]
+        return _chain_pt(tail, wrap)
+    else:
+        return wrap
+#
+
 
 def _optimize_layout_euclidean_single_epoch(
     head_embedding,
@@ -77,17 +137,14 @@ def _optimize_layout_euclidean_single_epoch(
     rng_state,
     gamma,
     dim,
-    # constraints
-    pin_constraint,
-    point_constraint,
-    grad_constraint,
-    #
     move_other,
     alpha,
     epochs_per_negative_sample,
     epoch_of_next_negative_sample,
     epoch_of_next_sample,
-    n,
+    n,              # epoch
+    wrap_idx_pt,
+    wrap_idx_grad,
     densmap_flag,
     dens_phi_sum,
     dens_re_sum,
@@ -113,6 +170,15 @@ def _optimize_layout_euclidean_single_epoch(
     #        # once constrained, iteration can just do project_onto_tangent_space
     #        #                   to zero the required gradients.
 
+    #if len(constrain_idx_pt):
+    #print("_optimize_layout_euclidean_single_epoch")
+    #print("head,tail shapes",head_embedding.shape, tail_embedding.shape)
+    #for j in [13,14]:
+    #    print("init head_embeding[",j,"]", head_embedding[j])
+    #    print("init tail_embeding[",j,"]", tail_embedding[j])
+    assert head_embedding.shape == tail_embedding.shape  # nice for constraints
+    assert np.all(head_embedding == tail_embedding)
+
     for i in numba.prange(epochs_per_sample.shape[0]):
         if epoch_of_next_sample[i] <= n:
             j = head[i]
@@ -120,6 +186,8 @@ def _optimize_layout_euclidean_single_epoch(
 
             current = head_embedding[j]
             other = tail_embedding[k]
+            #if len(constrain_idx_pt) and j==13: print("+head13", head_embedding[13])
+            #if len(constrain_idx_pt) and k==13: print("+tail13", head_embedding[13])
 
             dist_squared = rdist(current, other)
 
@@ -179,32 +247,24 @@ def _optimize_layout_euclidean_single_epoch(
             grad_d = clip_array(grad_coeff * delta)
             if densmap_flag:
                 grad_d += clip_array(2 * grad_cor_coeff * delta)
-            #if 'pin' in constraints: # (indexed) gradient zeroing?
-            #    for constraint in constraints['pin']:
-            #        constraint.project_onto_tangent_space(j, current, grad)
-            #        #if move_other: # think about this...
-            #        #    constraint.project_onto_constraint(other)
-            if grad_constraint is not None:
-                grad_d = grad_constraint.project_index_onto_tangent_space(j, current, grad_d)
-                #if j==13 or j==14:
-                #    print("j",j,"grad_d",grad_d)
-            current += grad_d * alpha
-            if move_other:
-                grad_d = -grad_d
-                if grad_constraint is not None:
-                    grad_constraint.project_index_onto_tangent_space(k, other, grad_d)
-                other += grad_d * alpha
+            current_grad = grad_d.copy()
+            if wrap_idx_grad is not None:
+                wrap_idx_grad(j, current, current_grad) # modify current_grad
+                current_grad = clip_array(current_grad)
+            current += alpha * current_grad
+            if wrap_idx_pt is not None:
+                wrap_idx_pt(j, current)
 
-            ## TRIAL:
-            #if 'point' in constraints:
-            #    for constraint in constraints['point']:
-            #        constraint.project_onto_constraint(current)
-            #        if move_other:
-            #            constraint.project_onto_constraint(other)
-            if point_constraint is not None:
-                point_constraint.project_onto_constraint(current)
-                if move_other:
-                    point_constraint.project_onto_constraint(other)
+            if move_other:
+                other_grad = -grad_d
+                #if grad_constraint is not None:
+                #    grad_constraint.project_index_onto_tangent_space(k, other, grad_d)
+                if wrap_idx_grad is not None:
+                    wrap_idx_grad(k, other, other_grad) # modify other_grad
+                    other_grad = clip_array(other_grad)
+                other += alpha * other_grad
+                if wrap_idx_pt is not None:
+                    wrap_idx_pt(k, other)
 
             epoch_of_next_sample[i] += epochs_per_sample[i]
 
@@ -229,223 +289,39 @@ def _optimize_layout_euclidean_single_epoch(
                 else:
                     grad_coeff = 0.0
 
-                #if grad_coeff > 0.0:
-                #    #for d in range(dim):
-                #    #    #grad_d = clip(grad_coeff * (current[d] - other[d]))
-                #    #    current[d] += clip(grad_coeff * (current[d] - other[d])) * alpha
-                #    #delta = current - other # vector[dim]
-                #    grad_d = clip_array(grad_coeff * (current-other))
-                #    if grad_constraint is not None:
-                #        grad_d = grad_constraint.project_index_onto_tangent_space(j, current, grad_d)
-                #        #if j==13 or j==14:
-                #        #    print("neg j",j,"grad_d",grad_d)
-                #    current += grad_d * alpha
-                #else:
-                #    #for d in range(dim):
-                #    #    current[d] += 4.0 * alpha
-                #    grad_d = np.full(dim, 4.0)
-                #    if grad_constraint is not None:
-                #        grad_d = grad_constraint.project_index_onto_tangent_space(j, current, grad_d)
-                #        #if j==13 or j==14:
-                #        #    print("neg j",j,"grad_d",grad_d)
-                #    current += grad_d * alpha
                 if grad_coeff > 0.0:
                     grad_d = clip_array(grad_coeff * (current - other))
                 else:
                     # [ejk] quite strange.
                     #       Perhaps "do anything to avoid accidental superpositions"
                     grad_d = np.full(dim, 4.0)
-                if grad_constraint is not None:
-                    grad_constraint.project_index_onto_tangent_space(j, current, grad_d)
-                current += grad_d * alpha
+                current_grad = grad_d.copy()
+                if wrap_idx_grad is not None:
+                    wrap_idx_grad(j, current, current_grad) # modify current_grad
+                    current_grad = clip_array(current_grad)
+                current += alpha * current_grad
+                if True and wrap_idx_pt is not None:
+                    wrap_idx_pt(j, current)
 
-                ## TRIAL:
-                #if 'point' in constraints:
-                #    for constraint in constraints['point']:
-                #        constraint.project_onto_constraint(current)
-                #        #if move_other:
-                #        #    constraint.project_onto_constraint(other)
-                if point_constraint is not None:
-                    point_constraint.project_onto_constraint(current)
-                    #if move_other:
-                    #    point_constraint.project_onto_constraint(other)
+                # following is needed for correctness if tail==head
+                if move_other:
+                    other_grad = -grad_d
+                    if wrap_idx_grad is not None:
+                        wrap_idx_grad(k, other, other_grad) # modify other_grad
+                        other_grad = clip_array(other_grad)
+                    other += alpha * other_grad
+                    if wrap_idx_pt is not None:
+                        wrap_idx_pt(k, other)
 
-            # constraints (projection?) on current[d]?
+            #if len(constrain_idx_pt) and j==13: print("+head13", head_embedding[13])
+            #if len(constrain_idx_pt) and k==13: print("+tail13", head_embedding[13])
 
             epoch_of_next_negative_sample[i] += (
                 n_neg_samples * epochs_per_negative_sample[i]
             )
-
-
-def _optimize_layout_euclidean_masked_single_epoch(
-    head_embedding,
-    tail_embedding,
-    head,
-    tail,
-    mask,
-    n_vertices,
-    epochs_per_sample,
-    a,
-    b,
-    rng_state,
-    gamma,
-    dim,
-    move_other,
-    alpha,
-    epochs_per_negative_sample,
-    epoch_of_next_negative_sample,
-    epoch_of_next_sample,
-    n,
-    densmap_flag,
-    dens_phi_sum,
-    dens_re_sum,
-    dens_re_cov,
-    dens_re_std,
-    dens_re_mean,
-    dens_lambda,
-    dens_R,
-    dens_mu,
-    dens_mu_tot,
-):
-    # TRIAL: constrain 'x' (first) embedding dim to [-1,+1] range
-    # (we can safely specify fewer (the first) dims to be bounded)
-    los = np.array([constrain_lo], dtype=np.float32)
-    his = np.array([constrain_hi], dtype=np.float32)
-    constraint = DimLohi(los, his)
-
-    # DEBUG:
-    #if pin_mask is not None:
-    #    for i in numba.prange(head.shape[0]):
-    #        j = head[i]
-    #        current = head_embedding[j]
-    #        current_mask = mask[j]
-    #        for d in range(dim):
-    #            if current_mask[d] == 0.0:
-    #                print("i,j=",i,j," current",current,"  pinned dim",d,"  begins at",current[d])
-
-    for i in numba.prange(epochs_per_sample.shape[0]):
-        if epoch_of_next_sample[i] <= n:
-            j = head[i]
-            k = tail[i]
-
-            current = head_embedding[j]
-            other = tail_embedding[k]
-
-            current_mask = mask[j]
-            other_mask = mask[k]
-
-            dist_squared = rdist(current, other)
-
-            if densmap_flag:
-                phi = 1.0 / (1.0 + a * pow(dist_squared, b))
-                dphi_term = (
-                    a * b * pow(dist_squared, b - 1) / (1.0 + a * pow(dist_squared, b))
-                )
-
-                q_jk = phi / dens_phi_sum[k]
-                q_kj = phi / dens_phi_sum[j]
-
-                drk = q_jk * (
-                    (1.0 - b * (1 - phi)) / np.exp(dens_re_sum[k]) + dphi_term
-                )
-                drj = q_kj * (
-                    (1.0 - b * (1 - phi)) / np.exp(dens_re_sum[j]) + dphi_term
-                )
-
-                re_std_sq = dens_re_std * dens_re_std
-                weight_k = (
-                    dens_R[k]
-                    - dens_re_cov * (dens_re_sum[k] - dens_re_mean) / re_std_sq
-                )
-                weight_j = (
-                    dens_R[j]
-                    - dens_re_cov * (dens_re_sum[j] - dens_re_mean) / re_std_sq
-                )
-
-                grad_cor_coeff = (
-                    dens_lambda
-                    * dens_mu_tot
-                    * (weight_k * drk + weight_j * drj)
-                    / (dens_mu[i] * dens_re_std)
-                    / n_vertices
-                )
-
-            if dist_squared > 0.0:
-                grad_coeff = -2.0 * a * b * pow(dist_squared, b - 1.0)
-                grad_coeff /= a * pow(dist_squared, b) + 1.0
-            else:
-                grad_coeff = 0.0
-
-            for d in range(dim):
-                grad_d = clip(grad_coeff * (current[d] - other[d]))
-
-                if densmap_flag:
-                    grad_d += clip(2 * grad_cor_coeff * (current[d] - other[d]))
-
-                #ejk: constraint.project_onto_tangent_plane?
-                #cd = current[d]
-                current[d] += current_mask[d] * grad_d * alpha
-                #if current_mask[d] == 0.0:
-                #    print("current head[",j,"] pinned dim",d,"  cd",cd,"to",current[d])
-                if move_other:
-                    other[d] += - other_mask[d] * grad_d * alpha
-
-            # TRIAL: current/other may have moved
-            if constraint is not None:
-                constraint.project_onto_constraint(current)
-                if move_other:
-                    constraint.project_onto_constraint(other)
-
-            epoch_of_next_sample[i] += epochs_per_sample[i]
-
-            n_neg_samples = int(
-                (n - epoch_of_next_negative_sample[i]) / epochs_per_negative_sample[i]
-            )
-
-            for p in range(n_neg_samples):
-                k = tau_rand_int(rng_state) % n_vertices
-
-                other = tail_embedding[k]
-
-                dist_squared = rdist(current, other)
-
-                if dist_squared > 0.0:
-                    grad_coeff = 2.0 * gamma * b
-                    grad_coeff /= (0.001 + dist_squared) * (
-                        a * pow(dist_squared, b) + 1
-                    )
-                elif j == k:
-                    continue
-                else:
-                    grad_coeff = 0.0
-
-                # move conditional out of loop.
-                #for d in range(dim):
-                #    if grad_coeff > 0.0:
-                #        grad_d = clip(grad_coeff * (current[d] - other[d]))
-                #    else:
-                #        grad_d = 4.0
-                #    current[d] += current_mask[d] * grad_d * alpha
-                if grad_coeff > 0.0:
-                    for d in range(dim):
-                        current[d] += ( current_mask[d]
-                                       * clip(grad_coeff * (current[d] - other[d]))
-                                       * alpha )
-                else:
-                    # I don't understand why such should "expand around origin"
-                    # Why not random jitter? Why not by 'local distance' instead of alpha?
-                    for d in range(dim):
-                        current[d] += current_mask[d] * (4.0 * alpha)
-
-                # TRIAL: current may have moved
-                if constraint is not None:
-                    constraint.project_onto_constraint(current)
-                    if move_other:
-                        constraint.project_onto_constraint(other)
-
-            epoch_of_next_negative_sample[i] += (
-                n_neg_samples * epochs_per_negative_sample[i]
-            )
+    #if len(constrain_idx_pt):
+    #print("final head_embeding[13]", head_embedding[13])
+    #print("final tail_embeding[13]", tail_embedding[13])
 
 
 def _optimize_layout_euclidean_densmap_epoch_init(
@@ -481,7 +357,7 @@ def _optimize_layout_euclidean_densmap_epoch_init(
         re_sum[i] = np.log(epsilon + (re_sum[i] / phi_sum[i]))
 
 
-def optimize_layout_euclidean(
+def optimize_layout_euclidean_nomask(
     head_embedding,
     tail_embedding,
     head,
@@ -559,12 +435,12 @@ def optimize_layout_euclidean(
     if True:
         # TRIAL: constrain 'x' (first) embedding dim to [-1,+1] range
         # (we can safely specify fewer (the first) dims to be bounded)
-        los = np.array([constrain_lo], dtype=np.float32)
-        his = np.array([constrain_hi], dtype=np.float32)
-        constraints = {
-            "point": [DimLohi(los, his)]
-        }
-        point_constraint = DimLohi(los,his)
+        #los = np.array([constrain_lo], dtype=np.float32)
+        #his = np.array([constrain_hi], dtype=np.float32)
+        #constraints = {
+        #    "point": [DimLohi(los, his)]
+        #}
+        #point_constraint = DimLohi(los,his)
 
         return optimize_layout_euclidean_masked(
             head_embedding,
@@ -701,8 +577,7 @@ def optimize_layout_euclidean(
     return head_embedding
 
 
-
-def optimize_layout_euclidean_masked(
+def optimize_layout_euclidean(
     head_embedding,
     tail_embedding,
     head,
@@ -721,7 +596,8 @@ def optimize_layout_euclidean_masked(
     densmap=False,
     densmap_kwds={},
     move_other=False,
-    pin_mask=None, # if ndarray, then assume pin_mask, else try for dict of constraints
+    output_constrain=None, # TBD: independent of head_embedding index
+    pin_mask=None, # dict of constraints (or ndarray of 0/1 mask)
 ):
     """Improve an embedding using stochastic gradient descent to minimize the
     fuzzy set cross entropy between the 1-skeletons of the high dimensional
@@ -741,7 +617,10 @@ def optimize_layout_euclidean_masked(
         The indices of the heads of 1-simplices with non-zero membership.
     tail: array of shape (n_1_simplices)
         The indices of the tails of 1-simplices with non-zero membership.
-    pin_mask: array of shape (n_samples) or (n_samples, n_components)
+    output_constrain: default None
+        dict of numba point or grad submanifold projection functions
+    pin_mask: default None
+        Array of shape (n_samples) or (n_samples, n_components)
         The weights (in [0,1]) assigned to each sample, defining how much they
         should be updated. 0 means the point will not move at all, 1 means
         they are updated normally. In-between values allow for fine-tuning.
@@ -785,8 +664,8 @@ def optimize_layout_euclidean_masked(
         The optimized embedding.
     """
 
-    print("TRIAL: opt+mask+version",layout_version)
-
+    print("optimize_layout_euclidean_masked")
+    print("head,tail shapes",head_embedding.shape, tail_embedding.shape)
     dim = head_embedding.shape[1]
     #move_other = head_embedding.shape[0] == tail_embedding.shape[0]
     alpha = initial_alpha
@@ -797,24 +676,32 @@ def optimize_layout_euclidean_masked(
 
     if pin_mask is None:
         pin_mask = {}
-    grad_constraint = None
-    point_constraint = None
-    pin_constraint = None
-    epoch_constraint = None
     have_constraints = True
+    # historical: packing a list of fns into a single call was problematic
+    #             perhaps better in numba >= 0.53?
+    # But eventually it would be nice to accept a list of functions
+    fns_idx_pt = []
+    fns_idx_grad = []
+
     if isinstance(pin_mask, dict): # pin_mask is a more generic "constraints" dictionary
-        print("constraints")
-        for k in pin_mask.keys():
-            if k=='grad': grad_constraint = pin_mask[k][0]
-            elif k=='point': point_constraint = pin_mask[k][0]
-            elif k=='pin': pin_constraint = pin_mask[k][0]
-            elif k=='epoch': epoch_constraint = pin_mask[k][0]
-            # todo: packing a list of constraints into a new one
+        # Dictionary layout:
+        #   key  -->   list( tuple )
+        #   where tuple ~ (jit_function, [const_args,...]) (or empty)
+        #print("constraints", pin_mask.keys())
+        for kk,k in enumerate(pin_mask.keys()):
+            print("kk,k",kk,k)
+            if k=='idx_pt':
+                fns_idx_pt = [pin_mask[k]] # revert: do NOT support a list, numba issues?
+            elif k=='idx_grad':
+                fns_idx_grad = [pin_mask[k]]
+            #elif k=='epoch': fns_epoch = [pin_mask[k][0]]
             else:
                 print(" Warning: unrecognized constraints key", k)
                 print(" Allowed constraint keys:", recognized)
+        # I'm trying to avoid numba 0.53 warnings (about firstclass functions)
+
         optimize_fn = numba.njit(
-            _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel
+            _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel,
         )
     else:
         have_constraints = False
@@ -828,21 +715,42 @@ def optimize_layout_euclidean_masked(
                 if pin_mask[i,d] == 0.0:
                     print("sample",i,"pin head[",d,"] begins at",head_embedding[i,d])
 
-
+        # v.2 translate zeros in pin_mask to embedding values; nonzeros become np.inf
+        # and then uses a 'freeinf' constraint from constraints.py
+        have_constraints = True
+        freeinf_arg = np.where( pin_mask == 0.0, head_embedding, np.float32(np.inf) )
+        # original approach
+        @numba.njit()
+        def pin_mask_constraint(idx,pt):
+            con.freeinf_pt( idx, pt, freeinf_arg )
+        fns_idx_pt = [pin_mask_constraint,]
+        # OR mirror a tuple-based approach
+        #pin_mask_constraint_tuple = (con.freeinf_pt, freeinf_arg,)
+        #@numba.njit()
+        #def pin_mask_constraint2(idx,pt):
+        #    pin_mask_constraint_tuple[0]( idx, pt, *pin_mask_constraint_tuple[1:] )
+        #fns_idx_pt += (pin_mask_constraint2,)
 
         optimize_fn = numba.njit(
-            _optimize_layout_euclidean_masked_single_epoch, fastmath=True, parallel=parallel
+            _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel,
         )
-        # NEW: boolean pin mask as a constraint
-        #      Where pin_mask zeroes the gradient, head_embedding must not change
-        #have_constraints = True
-        #pinned = np.where( pin_mask == 0, head_embedding, np.inf ).astype(np.float32)
-        # COULD also do this as a pin_constraint, but zeroing the
-        #       pinned gradients is all we really need.
-        #grad_constraint = PinNoninf( pinned )
-        #optimize_fn = numba.njit(
-        #    _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel
-        #)
+
+    # call a tuple of jit functions(idx,pt) in sequential order
+    print("fns_idx_pt",fns_idx_pt)
+    # Note: _chain_idx_pt has some numba issues
+    #       todo: get rid of list fns_idx_pt etc (not useful)
+    wrap_idx_pt = None # or con.noop_pt
+    wrap_idx_grad = None # or con.noop_grad
+    if len(fns_idx_pt):
+        #wrap_idx_pt = _chain_idx_pt( fns_idx_pt )
+        if len(fns_idx_pt) > 1:
+            print(" Warning: only accepting 1st idx_pt constraint for now")
+        wrap_idx_pt = fns_idx_pt[0]
+    if len(fns_idx_grad):
+        #wrap_idx_grad = _chain_idx_grad( fns_idx_pt )
+        if len(fns_idx_grad) > 1:
+            print(" Warning: only accepting 1st idx_grad constraint for now")
+        wrap_idx_grad = fns_idx_grad[0]
 
     if densmap:
         dens_init_fn = numba.njit(
@@ -895,6 +803,7 @@ def optimize_layout_euclidean_masked(
             dens_re_cov = 0
 
         if have_constraints:
+
             optimize_fn(
                 head_embedding,
                 tail_embedding,
@@ -907,15 +816,14 @@ def optimize_layout_euclidean_masked(
                 rng_state,
                 gamma,
                 dim,
-                pin_constraint,
-                point_constraint,
-                grad_constraint,
                 move_other,
                 alpha,
                 epochs_per_negative_sample,
                 epoch_of_next_negative_sample,
                 epoch_of_next_sample,
                 n,
+                wrap_idx_pt,
+                wrap_idx_grad,
                 densmap_flag,
                 dens_phi_sum,
                 dens_re_sum,
@@ -1523,3 +1431,4 @@ def optimize_layout_aligned_euclidean(
             print("\tcompleted ", n, " / ", n_epochs, "epochs")
 
     return head_embeddings
+#
