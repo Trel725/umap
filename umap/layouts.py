@@ -145,6 +145,8 @@ def _optimize_layout_euclidean_single_epoch(
     n,              # epoch
     wrap_idx_pt,
     wrap_idx_grad,
+    wrap_pt,
+    wrap_grad,
     densmap_flag,
     dens_phi_sum,
     dens_re_sum,
@@ -176,6 +178,10 @@ def _optimize_layout_euclidean_single_epoch(
     #for j in [13,14]:
     #    print("init head_embeding[",j,"]", head_embedding[j])
     #    print("init tail_embeding[",j,"]", tail_embedding[j])
+    #if wrap_idx_pt is not None: print("wrap_idx_pt",wrap_idx_pt)
+    #if wrap_idx_grad is not None: print("wrap_idx_grad",wrap_idx_grad)
+    #if wrap_pt is not None: print("wrap_pt",wrap_pt)
+    #if wrap_grad is not None: print("wrap_grad",wrap_grad)
     assert head_embedding.shape == tail_embedding.shape  # nice for constraints
     assert np.all(head_embedding == tail_embedding)
 
@@ -183,6 +189,7 @@ def _optimize_layout_euclidean_single_epoch(
         if epoch_of_next_sample[i] <= n:
             j = head[i]
             k = tail[i]
+            #if j==12: print("j==12")
 
             current = head_embedding[j]
             other = tail_embedding[k]
@@ -248,23 +255,43 @@ def _optimize_layout_euclidean_single_epoch(
             if densmap_flag:
                 grad_d += clip_array(2 * grad_cor_coeff * delta)
             current_grad = grad_d.copy()
+
+            doclip = False
             if wrap_idx_grad is not None:
-                wrap_idx_grad(j, current, current_grad) # modify current_grad
+                wrap_idx_grad(j, current, current_grad)
+                doclip = True
+            if wrap_grad is not None:
+                wrap_grad(current, current_grad)
+                doclip = True
+            if doclip:
                 current_grad = clip_array(current_grad)
+
             current += alpha * current_grad
             if wrap_idx_pt is not None:
                 wrap_idx_pt(j, current)
+            if wrap_pt is not None:
+                #c0 = current.copy()
+                wrap_pt(current)
+                #print("wrap_pt:",c0,"-->",current)
 
             if move_other:
                 other_grad = -grad_d
-                #if grad_constraint is not None:
-                #    grad_constraint.project_index_onto_tangent_space(k, other, grad_d)
+
+                doclip = False
                 if wrap_idx_grad is not None:
-                    wrap_idx_grad(k, other, other_grad) # modify other_grad
+                    wrap_idx_grad(k, other, other_grad)
+                    doclip = True
+                if wrap_grad is not None:
+                    wrap_grad(other, other_grad)
+                    doclip = True
+                if doclip:
                     other_grad = clip_array(other_grad)
+
                 other += alpha * other_grad
                 if wrap_idx_pt is not None:
                     wrap_idx_pt(k, other)
+                if wrap_pt is not None:
+                    wrap_pt(other)
 
             epoch_of_next_sample[i] += epochs_per_sample[i]
 
@@ -296,22 +323,42 @@ def _optimize_layout_euclidean_single_epoch(
                     #       Perhaps "do anything to avoid accidental superpositions"
                     grad_d = np.full(dim, 4.0)
                 current_grad = grad_d.copy()
+
+                doclip = False
                 if wrap_idx_grad is not None:
-                    wrap_idx_grad(j, current, current_grad) # modify current_grad
+                    wrap_idx_grad(j, current, current_grad)
+                    doclip = True
+                if wrap_grad is not None:
+                    wrap_grad(current, current_grad)
+                    doclip = True
+                if doclip:
                     current_grad = clip_array(current_grad)
+
                 current += alpha * current_grad
                 if wrap_idx_pt is not None:
                     wrap_idx_pt(j, current)
+                if wrap_pt is not None:
+                    wrap_pt(current)
 
                 # following is needed for correctness if tail==head
                 if move_other:
                     other_grad = -grad_d
+
+                    doclip = False
                     if wrap_idx_grad is not None:
-                        wrap_idx_grad(k, other, other_grad) # modify other_grad
+                        wrap_idx_grad(k, other, other_grad)
+                        doclip = True
+                    if wrap_grad is not None:
+                        wrap_grad(other, other_grad)
+                        doclip = True
+                    if doclip:
                         other_grad = clip_array(other_grad)
+
                     other += alpha * other_grad
                     if wrap_idx_pt is not None:
                         wrap_idx_pt(k, other)
+                    if wrap_pt is not None:
+                        wrap_pt(other)
 
             #if len(constrain_idx_pt) and j==13: print("+head13", head_embedding[13])
             #if len(constrain_idx_pt) and k==13: print("+tail13", head_embedding[13])
@@ -356,225 +403,6 @@ def _optimize_layout_euclidean_densmap_epoch_init(
     for i in range(re_sum.size):
         re_sum[i] = np.log(epsilon + (re_sum[i] / phi_sum[i]))
 
-
-def optimize_layout_euclidean_nomask(
-    head_embedding,
-    tail_embedding,
-    head,
-    tail,
-    n_epochs,
-    n_vertices,
-    epochs_per_sample,
-    a,
-    b,
-    rng_state,
-    gamma=1.0,
-    initial_alpha=1.0,
-    negative_sample_rate=5.0,
-    parallel=False,
-    verbose=False,
-    densmap=False,
-    densmap_kwds={},
-    move_other=False,
-):
-    """Improve an embedding using stochastic gradient descent to minimize the
-    fuzzy set cross entropy between the 1-skeletons of the high dimensional
-    and low dimensional fuzzy simplicial sets. In practice this is done by
-    sampling edges based on their membership strength (with the (1-p) terms
-    coming from negative sampling similar to word2vec).
-    Parameters
-    ----------
-    head_embedding: array of shape (n_samples, n_components)
-        The initial embedding to be improved by SGD.
-    tail_embedding: array of shape (source_samples, n_components)
-        The reference embedding of embedded points. If not embedding new
-        previously unseen points with respect to an existing embedding this
-        is simply the head_embedding (again); otherwise it provides the
-        existing embedding to embed with respect to.
-    head: array of shape (n_1_simplices)
-        The indices of the heads of 1-simplices with non-zero membership.
-    tail: array of shape (n_1_simplices)
-        The indices of the tails of 1-simplices with non-zero membership.
-    n_epochs: int
-        The number of training epochs to use in optimization.
-    n_vertices: int
-        The number of vertices (0-simplices) in the dataset.
-    epochs_per_samples: array of shape (n_1_simplices)
-        A float value of the number of epochs per 1-simplex. 1-simplices with
-        weaker membership strength will have more epochs between being sampled.
-    a: float
-        Parameter of differentiable approximation of right adjoint functor
-    b: float
-        Parameter of differentiable approximation of right adjoint functor
-    rng_state: array of int64, shape (3,)
-        The internal state of the rng
-    gamma: float (optional, default 1.0)
-        Weight to apply to negative samples.
-    initial_alpha: float (optional, default 1.0)
-        Initial learning rate for the SGD.
-    negative_sample_rate: int (optional, default 5)
-        Number of negative samples to use per positive sample.
-    parallel: bool (optional, default False)
-        Whether to run the computation using numba parallel.
-        Running in parallel is non-deterministic, and is not used
-        if a random seed has been set, to ensure reproducibility.
-    verbose: bool (optional, default False)
-        Whether to report information on the current progress of the algorithm.
-    densmap: bool (optional, default False)
-        Whether to use the density-augmented densMAP objective
-    densmap_kwds: dict (optional, default {})
-        Auxiliary data for densMAP
-    move_other: bool (optional, default False)
-        Whether to adjust tail_embedding alongside head_embedding
-    Returns
-    -------
-    embedding: array of shape (n_samples, n_components)
-        The optimized embedding.
-    """
-
-    if True:
-        # TRIAL: constrain 'x' (first) embedding dim to [-1,+1] range
-        # (we can safely specify fewer (the first) dims to be bounded)
-        #los = np.array([constrain_lo], dtype=np.float32)
-        #his = np.array([constrain_hi], dtype=np.float32)
-        #constraints = {
-        #    "point": [DimLohi(los, his)]
-        #}
-        #point_constraint = DimLohi(los,his)
-
-        return optimize_layout_euclidean_masked(
-            head_embedding,
-            tail_embedding,
-            head,
-            tail,
-            n_epochs,
-            n_vertices,
-            epochs_per_sample,
-            a,
-            b,
-            rng_state,
-            gamma=1.0,
-            initial_alpha=1.0,
-            negative_sample_rate=5.0,
-            parallel=False,
-            verbose=False,
-            densmap=False,
-            densmap_kwds={},
-            move_other=False,
-            pin_mask=None,
-        )
-
-    dim = head_embedding.shape[1]
-    alpha = initial_alpha
-
-    epochs_per_negative_sample = epochs_per_sample / negative_sample_rate
-    epoch_of_next_negative_sample = epochs_per_negative_sample.copy()
-    epoch_of_next_sample = epochs_per_sample.copy()
-
-    #if pin_mask is not None:
-    #    assert (pin_mask.shape == head_embedding.shape
-    #            or pin_mask.shape == torch.Size(head_embedding.shape[0]))
-
-    optimize_fn = numba.njit(
-        _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel
-    )
-
-    if densmap:
-        dens_init_fn = numba.njit(
-            _optimize_layout_euclidean_densmap_epoch_init,
-            fastmath=True,
-            parallel=parallel,
-        )
-
-        dens_mu_tot = np.sum(densmap_kwds["mu_sum"]) / 2
-        dens_lambda = densmap_kwds["lambda"]
-        dens_R = densmap_kwds["R"]
-        dens_mu = densmap_kwds["mu"]
-        dens_phi_sum = np.zeros(n_vertices, dtype=np.float32)
-        dens_re_sum = np.zeros(n_vertices, dtype=np.float32)
-        dens_var_shift = densmap_kwds["var_shift"]
-    else:
-        dens_mu_tot = 0
-        dens_lambda = 0
-        dens_R = np.zeros(1, dtype=np.float32)
-        dens_mu = np.zeros(1, dtype=np.float32)
-        dens_phi_sum = np.zeros(1, dtype=np.float32)
-        dens_re_sum = np.zeros(1, dtype=np.float32)
-
-
-    for n in range(n_epochs):
-
-        densmap_flag = (
-            densmap
-            and (densmap_kwds["lambda"] > 0)
-            and (((n + 1) / float(n_epochs)) > (1 - densmap_kwds["frac"]))
-        )
-
-        if densmap_flag:
-            dens_init_fn(
-                head_embedding,
-                tail_embedding,
-                head,
-                tail,
-                a,
-                b,
-                dens_re_sum,
-                dens_phi_sum,
-            )
-
-            dens_re_std = np.sqrt(np.var(dens_re_sum) + dens_var_shift)
-            dens_re_mean = np.mean(dens_re_sum)
-            dens_re_cov = np.dot(dens_re_sum, dens_R) / (n_vertices - 1)
-        else:
-            dens_re_std = 0
-            dens_re_mean = 0
-            dens_re_cov = 0
-
-        optimize_fn(
-            head_embedding,
-            tail_embedding,
-            head,
-            tail,
-            n_vertices,
-            epochs_per_sample,
-            a,
-            b,
-            rng_state,
-            gamma,
-            dim,
-            move_other,
-            alpha,
-            epochs_per_negative_sample,
-            epoch_of_next_negative_sample,
-            epoch_of_next_sample,
-            n,
-            # NO: pin_mask,
-            densmap_flag,
-            dens_phi_sum,
-            dens_re_sum,
-            dens_re_cov,
-            dens_re_std,
-            dens_re_mean,
-            dens_lambda,
-            dens_R,
-            dens_mu,
-            dens_mu_tot,
-        )
-
-        alpha = initial_alpha * (1.0 - (float(n) / float(n_epochs)))
-
-        if verbose and n % int(n_epochs / 10) == 0:
-            print("\tcompleted ", n, " / ", n_epochs, "epochs")
-
-    # epoch constraints:
-    #      retain all relative distances of embedding.
-    # i.e. they are some translate, rotate and uniform scaling
-    #      Ex. cemter of mass at origin, and rms radius = 1
-    if 'epoch' in constraints:
-        for constraint in constraints['epoch']:
-            constraint.project_onto_constraint(head_embedding)
-
-    return head_embedding
 
 
 def optimize_layout_euclidean(
@@ -664,8 +492,8 @@ def optimize_layout_euclidean(
         The optimized embedding.
     """
 
-    print("optimize_layout_euclidean_masked")
-    print("head,tail shapes",head_embedding.shape, tail_embedding.shape)
+    #print("optimize_layout_euclidean")
+    #print("head,tail shapes",head_embedding.shape, tail_embedding.shape)
     dim = head_embedding.shape[1]
     #move_other = head_embedding.shape[0] == tail_embedding.shape[0]
     alpha = initial_alpha
@@ -676,7 +504,7 @@ def optimize_layout_euclidean(
 
     if pin_mask is None:
         pin_mask = {}
-    have_constraints = True
+    have_constraints = False
     # historical: packing a list of fns into a single call was problematic
     #             perhaps better in numba >= 0.53?
     # But eventually it would be nice to accept a list of functions
@@ -692,44 +520,61 @@ def optimize_layout_euclidean(
             print("kk,k",kk,k)
             if k=='idx_pt':
                 fns_idx_pt = [pin_mask[k]] # revert: do NOT support a list, numba issues?
+                have_constraints = True
             elif k=='idx_grad':
                 fns_idx_grad = [pin_mask[k]]
+                have_constraints = True
             #elif k=='epoch': fns_epoch = [pin_mask[k][0]]
             else:
                 print(" Warning: unrecognized constraints key", k)
                 print(" Allowed constraint keys:", recognized)
         # I'm trying to avoid numba 0.53 warnings (about firstclass functions)
 
-        optimize_fn = numba.njit(
-            _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel,
-        )
     else:
-        have_constraints = False
         print("pin_mask")
         assert (isinstance(pin_mask, np.ndarray))
-        assert (pin_mask.shape == head_embedding.shape
-                or pin_mask.shape == torch.Size(head_embedding.shape[0]))
-        # DEBUG:
-        for i in range(pin_mask.shape[0]):
-            for d in range(dim):
-                if pin_mask[i,d] == 0.0:
-                    print("sample",i,"pin head[",d,"] begins at",head_embedding[i,d])
+        if len(pin_mask.shape) == 1:
+            assert pin_mask.shape[0] == head_embedding.shape[0]
+            # let's use pinindexed_grad for this one
+            # (it's a more stringent test)
+            idxs = []
+            for i in pin_mask.size:
+                if pin_mask[i]:
+                    idxs.extend(i)
+            print("pin_mask 1d point indices", idxs)
+            fixed_pos_idxs = np.array(idxs)
+            @numba.njit()
+            def pin_mask_1d(idx,pt,grad):
+                return con.pinindexed_grad(idx,pt,grad, fixed_pos_idxs)
+            fns_idx_grad = [pin_mask_1d,]
+            have_constraints = True
 
-        # v.2 translate zeros in pin_mask to embedding values; nonzeros become np.inf
-        # and then uses a 'freeinf' constraint from constraints.py
-        have_constraints = True
-        freeinf_arg = np.where( pin_mask == 0.0, head_embedding, np.float32(np.inf) )
-        # original approach
-        @numba.njit()
-        def pin_mask_constraint(idx,pt):
-            con.freeinf_pt( idx, pt, freeinf_arg )
-        fns_idx_pt = [pin_mask_constraint,]
-        # OR mirror a tuple-based approach
-        #pin_mask_constraint_tuple = (con.freeinf_pt, freeinf_arg,)
-        #@numba.njit()
-        #def pin_mask_constraint2(idx,pt):
-        #    pin_mask_constraint_tuple[0]( idx, pt, *pin_mask_constraint_tuple[1:] )
-        #fns_idx_pt += (pin_mask_constraint2,)
+        elif len(pin_mask.shape) == 2:
+            assert pin_mask.shape == head_embedding.shape
+            # DEBUG:
+            for i in range(pin_mask.shape[0]):
+                for d in range(dim):
+                    if pin_mask[i,d] == 0.0:
+                        print("sample",i,"pin head[",d,"] begins at",head_embedding[i,d])
+            # v.2 translate zeros in pin_mask to embedding values; nonzeros become np.inf
+            # and then uses a 'freeinf' constraint from constraints.py
+            freeinf_arg = np.where( pin_mask == 0.0, head_embedding, np.float32(np.inf) )
+            # original approach
+            @numba.njit()
+            def pin_mask_constraint(idx,pt):
+                con.freeinf_pt( idx, pt, freeinf_arg )
+            fns_idx_pt = [pin_mask_constraint,]
+            have_constraints = True
+            # OR mirror a tuple-based approach
+            #pin_mask_constraint_tuple = (con.freeinf_pt, freeinf_arg,)
+            #@numba.njit()
+            #def pin_mask_constraint2(idx,pt):
+            #    pin_mask_constraint_tuple[0]( idx, pt, *pin_mask_constraint_tuple[1:] )
+            #fns_idx_pt += (pin_mask_constraint2,)
+
+        #assert pin_mask.shape == torch.Size(head_embedding.shape[0]))
+        else:
+            raise ValueError("pin_mask data_constrain must be a 1 or 2-dim array")
 
         optimize_fn = numba.njit(
             _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel,
@@ -751,6 +596,34 @@ def optimize_layout_euclidean(
         if len(fns_idx_grad) > 1:
             print(" Warning: only accepting 1st idx_grad constraint for now")
         wrap_idx_grad = fns_idx_grad[0]
+
+    outconstrain_pt = None
+    outconstrain_grad = None
+    outconstrain_epoch_pt = None
+    outconstrain_final_pt = None
+    if output_constrain is not None:
+        assert isinstance(output_constrain, dict)
+        for k in output_constrain:
+            fn = output_constrain[k]
+            if k == 'pt': outconstrain_pt = fn; have_constraints=True
+            if k == 'grad': outconstrain_grad = fn; have_constraints=True
+            if k == 'epoch_pt': outconstrain_epoch_pt = fn; have_constraints=True
+            if k == 'final_pt': outconstrain_final_pt = fn; have_constraints=True
+
+    if have_constraints:
+        #if wrap_idx_pt is not None: print("wrap_idx_pt",wrap_idx_pt)
+        #if wrap_idx_grad is not None: print("wrap_idx_grad",wrap_idx_grad)
+        #if outconstrain_pt is not None: print("outconstrain_pt",outconstrain_pt)
+        #if outconstrain_grad is not None: print("outconstrain_grad",outconstrain_grad)
+        #if outconstrain_epoch_pt is not None: print("outconstrain_epoch_pt",outconstrain_epoch_pt)
+        #if outconstrain_final_pt is not None: print("outconstrain_final_pt",outconstrain_final_pt)
+        optimize_fn = numba.njit(
+            _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel,
+        )
+    else:
+        optimize_fn = numba.njit(
+            _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel
+        )
 
     if densmap:
         dens_init_fn = numba.njit(
@@ -802,76 +675,57 @@ def optimize_layout_euclidean(
             dens_re_mean = 0
             dens_re_cov = 0
 
-        if have_constraints:
+        optimize_fn(
+            head_embedding,
+            tail_embedding,
+            head,
+            tail,
+            n_vertices,
+            epochs_per_sample,
+            a,
+            b,
+            rng_state,
+            gamma,
+            dim,
+            move_other,
+            alpha,
+            epochs_per_negative_sample,
+            epoch_of_next_negative_sample,
+            epoch_of_next_sample,
+            n,
+            wrap_idx_pt,
+            wrap_idx_grad,
+            outconstrain_pt,
+            outconstrain_grad,
+            #outconstrain_epoch_pt = None
+            #outconstrain_final_pt = None
+            densmap_flag,
+            dens_phi_sum,
+            dens_re_sum,
+            dens_re_cov,
+            dens_re_std,
+            dens_re_mean,
+            dens_lambda,
+            dens_R,
+            dens_mu,
+            dens_mu_tot,
+        )
 
-            optimize_fn(
-                head_embedding,
-                tail_embedding,
-                head,
-                tail,
-                n_vertices,
-                epochs_per_sample,
-                a,
-                b,
-                rng_state,
-                gamma,
-                dim,
-                move_other,
-                alpha,
-                epochs_per_negative_sample,
-                epoch_of_next_negative_sample,
-                epoch_of_next_sample,
-                n,
-                wrap_idx_pt,
-                wrap_idx_grad,
-                densmap_flag,
-                dens_phi_sum,
-                dens_re_sum,
-                dens_re_cov,
-                dens_re_std,
-                dens_re_mean,
-                dens_lambda,
-                dens_R,
-                dens_mu,
-                dens_mu_tot,
-            )
-
-        else:
-            optimize_fn(
-                head_embedding,
-                tail_embedding,
-                head,
-                tail,
-                pin_mask,
-                n_vertices,
-                epochs_per_sample,
-                a,
-                b,
-                rng_state,
-                gamma,
-                dim,
-                move_other,
-                alpha,
-                epochs_per_negative_sample,
-                epoch_of_next_negative_sample,
-                epoch_of_next_sample,
-                n,
-                densmap_flag,
-                dens_phi_sum,
-                dens_re_sum,
-                dens_re_cov,
-                dens_re_std,
-                dens_re_mean,
-                dens_lambda,
-                dens_R,
-                dens_mu,
-                dens_mu_tot,
-            )
+        # Should outconstrain_epoch_pt run before epoch loop too?
+        if outconstrain_epoch_pt is not None:
+            outconstrain_final_pt(head_embedding)
+            if move_other: # ... maybe ? XXX
+                outconstrain_final_pt(tail_embedding)
 
         alpha = initial_alpha * (1.0 - (float(n) / float(n_epochs)))
 
         if verbose and n % int(n_epochs / 10) == 0:
             print("\tcompleted ", n, " / ", n_epochs, "epochs")
+
+    if outconstrain_final_pt is not None:
+        outconstrain_final_pt(head_embedding)
+        #if move_other: # ... probably not
+        #    outconstrain_final_pt(tail_embedding)
 
     return head_embedding
 

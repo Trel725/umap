@@ -158,14 +158,14 @@ def pinindexed_pts(pts, pin_idx=None, pin_pos=None):
     return pts
 
 @numba.njit()
-def pinindexed_grad(idx, pt, grad, pin_idx=None, pin_pos=None):
+def pinindexed_grad(idx, pt, grad, pin_idx=None):
     i = np.searchsorted( pin_idx, idx )         # binary search (uggh)
     if i < pin_idx.size and pin_idx[i] == idx:
         grad[:] = 0.0
     return grad
 
 @numba.njit()
-def pinindexed_grads(pts, grads, pin_idx=[{}], pin_pos=[{}]):
+def pinindexed_grads(pts, grads, pin_idx=[{}]):
     grads[pin_idx,:] = 0.0
     return grads
 
@@ -232,12 +232,6 @@ def springindexed_pts(pts, pin_idx=None, pin_pos=None, springs=None):
     assert pin_idx is not None and pin_pos is not None and springs is not None
     assert len(pin_idx.shape)==1 and len(pin_pos.shape)==2
     assert pin_idx.shape[0] == pin_pos.shape[0] and pin_idx.shape == springs.shape
-    #moves = np.isinf[springs]
-    #print(pin_pos.shape)
-    #print(moves)
-    #print(pin_idx[moves])
-    #print(pts[ pin_idx[moves], : ])
-    #print(pin_pos[moves])
     pts[ pin_idx[np.isinf(springs)], : ] = pin_pos[ np.isinf(springs) ]
     return pts
 
@@ -357,6 +351,8 @@ def test_pinindexed():
     #
     # Instead, can be safer:
     tupargs = (kwargs['pin_index'], kwargs['pin_pos']) # more robust dict->tuple
+    tupargs_grad = (kwargs['pin_index'],) # comma forces this to be list
+    print("tupargs_grad",tupargs_grad)
     #  or simpler, supply tuple directly
     #tupargs = (x_ind, x_pos)
     x0 = x[0,:].copy()
@@ -397,14 +393,14 @@ def test_pinindexed():
     assert np.all( y[7,:] == x[7,:] )
 
     grads = np.ones( (8,8), dtype=np.float32 )
-    y = pinindexed_grad(0, x[0,:], grads[0,:].copy(), *tupargs)
+    y = pinindexed_grad(0, x[0,:], grads[0,:].copy(), *tupargs_grad)
     #print("y7",y)
     assert( np.all( y == 0.0 ))
-    y = pinindexed_grad(-1, x[0,:], grads[0,:].copy(), *tupargs)
+    y = pinindexed_grad(-1, x[0,:], grads[0,:].copy(), *tupargs_grad)
     #print("y8",y)
     assert( np.all( y == grads[0,:]))
 
-    y = pinindexed_grads( x, grads.copy(), x_ind, x_pos )
+    y = pinindexed_grads( x, grads.copy(), x_ind ) # remove x_pos arg!
     #print("y10",y)
     assert np.all( y[0,:] == 0.0 )
     assert np.all( y[1,:] == 1.0 )
@@ -414,7 +410,7 @@ def test_pinindexed():
     assert np.all( y[6,:] == 0.0 )
     assert np.all( y[7,:] == 1.0 )
 
-    y = pinindexed_grads( x, grads, *tupargs )
+    y = pinindexed_grads( x, grads, *tupargs_grad )
     assert np.all(grads == y) # in-place ? This time, yes
     assert np.all( y[0,:] == 0.0 )
     assert np.all( y[1,:] == 1.0 )
@@ -523,10 +519,11 @@ def test_springindexed():
         np.repeat(np.float32(0.0),dim),
         np.repeat(np.float32(1.),dim),
     ))
-    print("data", numba.typeof(data), "\n",data)
-    print("idx (anchors)", numba.typeof(idx), "\n", idx)
-    print("force constants", numba.typeof(force_constants), "\n", force_constants)
-    print("pos (anchor positions)", numba.typeof(pos), "\n", pos)
+    # if this test is jitted, cannot call numba.typeof
+    print("data\n",data)
+    print("idx (anchors)\n", idx)
+    print("force constants\n", force_constants)
+    print("pos (anchor positions)\n", pos)
 
     #  idx[npin]
     #  force_constants[npin]
@@ -542,17 +539,19 @@ def test_springindexed():
         #jvec = spi.project_index_onto_constraint( i, ivec )
         jvec = springindexed_pt(i, ivec, *tupargs)
         gvec[ii] = springindexed_grad(i, data[i,].copy(), gvec[ii], *tupargs)
-        print(numba.typeof(data[i,]), numba.typeof(gvec[ii]))
-        print("\ni", i, "ivec",ivec)   # simple item IS changed in-place
+        #print(numba.typeof(data[i,]), numba.typeof(gvec[ii]))
+        print("\ni", i, "ivec",ivec)
+        print("force",force_constants[ii])
         #print("data[i,]",data[i,])
         print("jvec",jvec)
-        print("gvec",jvec)
+        print("gvec",gvec[ii])
         # assert np.all(ivec == jvec) # can fail
-        ray = data[i,] - pos[ii]
+        ray = pos[ii] - data[i,]
         ray2 = np.sum(np.square(ray))         # square of spring length
         rayforce = force_constants[ii] * ray2 # magnitude of force
         raylen = np.sqrt(ray2)                # spring length
         unitray = ray / raylen
+        print("rayforce * unitray", rayforce * unitray)
         
         #data[i,] = jvec
         #print("data[i,]",data[i,])
@@ -564,7 +563,7 @@ def test_springindexed():
             assert np.all(gvec[ii] == 0.0)   # convention for now
         else:
             assert np.all(jvec == ivec)
-            assert np.all( np.sum(np.square(gvec[ii] - rayforce * unitray)) < 1.e-4 )
+            assert np.sum(np.square(gvec[ii] - rayforce*unitray)) < 1.e-4
     # unindexed/invalid index:
     for i in [-1,0,1,999]:
         if i==0 or i==1:
@@ -579,12 +578,12 @@ def test_springindexed():
 
     # springindexed_pts...
     # springindexed_grads...
-    print("data", numba.typeof(data), "\n", data)
-    print("idx (anchors)", numba.typeof(idx), "\n", idx)
-    print("force constants", numba.typeof(force_constants), "\n", force_constants)
-    print("pos (anchor positions)", numba.typeof(pos), "\n", pos)
+    print("data\n",data)
+    print("idx (anchors)\n", idx)
+    print("force constants\n", force_constants)
+    print("pos (anchor positions)\n", pos)
     pts = springindexed_pts( data.copy(), *tupargs )
-    print("pts", numba.typeof(pts), "\n", pts)
+    print("pts\n", pts)
     for i in range(data.shape[0]):
         ii = np.searchsorted(idx, i)
         if ii < idx.size and idx[ii] == i and force_constants[ii] == np.inf:
@@ -598,12 +597,12 @@ def test_springindexed():
         if ii < idx.size and idx[ii] == i and force_constants[ii] == np.inf:
             assert np.all( grads[i] == 0.0 )
         else:
-            ray = data[i,] - pos[ii]
+            ray = pos[ii] - data[i,]
             ray2 = np.sum(np.square(ray))         # square of spring length
             rayforce = force_constants[ii] * ray2 # magnitude of force
             raylen = np.sqrt(ray2)                # spring length
             unitray = ray / raylen
-            assert np.all( np.sum(np.square(grads[i] - rayforce * unitray)) < 1.e-4 )
+            assert np.sum(np.square(grads[i] - rayforce * unitray)) < 1.e-4
     print("test springindexed OK")
 
 if __name__ == "__main__":

@@ -1174,7 +1174,7 @@ def simplicial_set_embedding(
 
     # if data_constrain specified an init array, we must NOT rescale it
     # This well-meaning rescale may also be incompatible with "constraint objects"
-    if euclidean_output and data_constrain is None:
+    if euclidean_output and data_constrain is None and output_constrain is None:
         # o.w. rescale embedding to range [0.,10.] (why not [-10.,10.]?)
         # This rescale is PER LOW EMBEDDING DIMENSION, which seems VERY BAD.
         #   (because this changes relative distances in a rotationally variant way)
@@ -1872,6 +1872,9 @@ class UMAP(BaseEstimator):
                 raise ValueError("For now we allow output constraints only for output_metric 'euclidean'")
             if not isinstance(self.output_constrain, dict):
                 raise ValueError("output_constrain must be a dictionary")
+            for k in self.output_constrain.keys():
+                if not k in ['pt', 'grad', 'epoch_pt', 'final_pt']:
+                    print(" Warning: unrecognized output_constrain key",k)
 
         # set output distance metric
         if callable(self.output_metric):
@@ -2739,7 +2742,7 @@ class UMAP(BaseEstimator):
                 #        print("sample",i,"pins",data_constrain[i,],"init",init[i,])
         if self.output_constrain is not None:
             # _validate_parameters ensures it must be a dict
-            print("output_constrain keys", data_constrain.keys())
+            print("output_constrain keys", self.output_constrain.keys())
 
         return simplicial_set_embedding(
             X,
