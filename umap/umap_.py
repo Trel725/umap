@@ -2737,6 +2737,7 @@ class UMAP(BaseEstimator):
             if isinstance(data_constrain, dict):
                 print("data_constrain keys", data_constrain.keys())
             else:
+                print("init.shape          ", init.shape)
                 print("data_constrain.shape", data_constrain.shape)
                 assert( data_constrain.shape == init.shape
                        or data_constrain.shape == init.shape[0] )
