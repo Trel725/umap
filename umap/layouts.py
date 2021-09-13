@@ -543,6 +543,7 @@ def optimize_layout_euclidean(
                     idxs.extend(i)
             print("pin_mask 1d point indices", idxs)
             fixed_pos_idxs = np.array(idxs)
+            # todo [opt]: no-op if zero points were fixed
             @numba.njit()
             def pin_mask_1d(idx,pt,grad):
                 return con.pinindexed_grad(idx,pt,grad, fixed_pos_idxs)
@@ -576,11 +577,13 @@ def optimize_layout_euclidean(
         else:
             raise ValueError("pin_mask data_constrain must be a 1 or 2-dim array")
 
-        optimize_fn = numba.njit(
-            _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel,
-        )
+        # XXX Oops? can delete this one.
+        #optimize_fn = numba.njit(
+        #    _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel,
+        #)
 
     # call a tuple of jit functions(idx,pt) in sequential order
+    #   This did NOT work so well.  Possibly numba issues?
     print("fns_idx_pt",fns_idx_pt)
     # Note: _chain_idx_pt has some numba issues
     #       todo: get rid of list fns_idx_pt etc (not useful)
@@ -610,20 +613,18 @@ def optimize_layout_euclidean(
             if k == 'epoch_pt': outconstrain_epoch_pt = fn; have_constraints=True
             if k == 'final_pt': outconstrain_final_pt = fn; have_constraints=True
 
-    if have_constraints:
-        #if wrap_idx_pt is not None: print("wrap_idx_pt",wrap_idx_pt)
-        #if wrap_idx_grad is not None: print("wrap_idx_grad",wrap_idx_grad)
-        #if outconstrain_pt is not None: print("outconstrain_pt",outconstrain_pt)
-        #if outconstrain_grad is not None: print("outconstrain_grad",outconstrain_grad)
-        #if outconstrain_epoch_pt is not None: print("outconstrain_epoch_pt",outconstrain_epoch_pt)
-        #if outconstrain_final_pt is not None: print("outconstrain_final_pt",outconstrain_final_pt)
-        optimize_fn = numba.njit(
-            _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel,
-        )
-    else:
-        optimize_fn = numba.njit(
-            _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel
-        )
+    # We no longer have separate paths, like the original "pin_mask" pull request.
+    #if have_constraints:
+    #    if wrap_idx_pt is not None: print("wrap_idx_pt",wrap_idx_pt)
+    #    if wrap_idx_grad is not None: print("wrap_idx_grad",wrap_idx_grad)
+    #    if outconstrain_pt is not None: print("outconstrain_pt",outconstrain_pt)
+    #    if outconstrain_grad is not None: print("outconstrain_grad",outconstrain_grad)
+    #    if outconstrain_epoch_pt is not None: print("outconstrain_epoch_pt",outconstrain_epoch_pt)
+    #    if outconstrain_final_pt is not None: print("outconstrain_final_pt",outconstrain_final_pt)
+
+    optimize_fn = numba.njit(
+        _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel
+    )
 
     if densmap:
         dens_init_fn = numba.njit(
@@ -647,6 +648,11 @@ def optimize_layout_euclidean(
         dens_phi_sum = np.zeros(1, dtype=np.float32)
         dens_re_sum = np.zeros(1, dtype=np.float32)
 
+    # Note: we do NOT adjust points to initially obey constraints.
+    #       'init' conditions are up to the user, and might involve
+    #       some best fit of an unconstrained UMAP to the constraints,
+    #       followed by manually adjusting constrained points so
+    #       they initially obey constraints.
     for n in range(n_epochs):
 
         densmap_flag = (

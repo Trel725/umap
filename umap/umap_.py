@@ -1463,19 +1463,21 @@ class UMAP(BaseEstimator):
     output_metric or function (optional, default 'euclidean')
         Like 'metric' and 'metric_kwds', you can specify a metric for the low
         dimensional space, using 'output_metric' and 'output_metric_kwds'.
-        (TBD) Additionally, you may specify:
-            output_constrain: (optional, default None)
-        A dictionary of constraints, or a (TBD: 1- or) 2-D "pin_mask" array of
-        0/1 values.  For now supported for euclidean target metric.
-        These can be point projections, tangent space projection, or even
-        "soft" constraints operating as gradient modifiers.
-        Note that output_constrain *cannot* handle only point-specific
-        constraints. (pinning points must use constraints passed directly
-        to the 'fit' method)
-        What *can* (/might) be handled are generic projections onto a predefined
+
+    output_constrain (optional, default None)
+        Supported (for now?) only for output_metric='euclidean'.
+        A dictionary of constraints on embeddings applicable to arbitrary data
+        points.
+        Constructor constraints can be tangent space projections, or global point
+        projections/bounds, or "soft" constraints operating as gradient modifiers.
+        These do NOT handle point-specific constraints --- "pinning" individual
+        points requires constraints taking a data index argument, and these are
+        handled by a data_constrain=... argument to the 'fit*' methods.
+        What *can* be handled are generic projections onto a predefined
         sub-manifold of the euclidean output space.
-        See constraints.py for dictionary layout and example constraints.
-        (TBD fuller output_constrain description, when it's working)
+        See constraints.py for supported dictionary keys.  Values are lists of
+        numba jit functions (of which only the first is used due to technical
+        difficulties)
 
     n_epochs: int (optional, default None)
         The number of training epochs to be used in optimizing the
@@ -1604,6 +1606,7 @@ class UMAP(BaseEstimator):
         your space.  It also violates the definition of a metric.
         For to map from internal structures back to your data use the variable
         _unique_inverse_.
+        Indexed constraints do not support unique yet (XXX warn about this)
 
     densmap: bool (optional, default False)
         Specifies whether the density-augmented objective of densMAP
@@ -1878,6 +1881,9 @@ class UMAP(BaseEstimator):
             for k in self.output_constrain.keys():
                 if not k in ['pt', 'grad', 'epoch_pt', 'final_pt']:
                     print(" Warning: unrecognized output_constrain key",k)
+                # TODO check that values are:
+                #      - single items (numba composing lists of functions seemed flaky at one point)
+                #      - callable functions that accept the expected arguments
 
         # set output distance metric
         if callable(self.output_metric):
@@ -2268,25 +2274,44 @@ class UMAP(BaseEstimator):
             The relevant attributes are ``target_metric`` and
             ``target_metric_kwds``.
 
-        data_constrain : array, shape (n_samples) or None
-            Describe constraints on embedded points.  Unlike self.output_constrain,
-            these constraints allow a point index parameter, so things like
-            pinning particular points of X becomes possible.
-            Format:
-            TBD It can be an array of weights in [0,1] (one weight per point),
-            defining how much points will be updated from their initial
+        data_constrain : array, shape (n_samples) or (n_samples,n_features),
+            or dictionary or None
+
+            Describe constraints on embedded points.  Unlike the constructor
+            output_constrain parameter, these constraints depend on point
+            index.  This supports pinning or other forces on particular points
+            of the embedding.
+
+            Numpy array format:
+            This defines how much points will be updated from their initial
             position: 0 means the point will be pinned (fixed), 1 means it will
             be updated normally, and in-between values allow for soft-pinning.
-            This argument is useful when providing a
-            numpy array for the initial embedding positions (``init`` parameter of
-            the ``UMAP`` class).  A 2-D 0/1 mask can supply different updating weight
-            to each dimension of each sample.
-            OR
-            a dict of constraints that can use the index of X for point-specific
-            constraints (like pinning).  This expands on what self.output_constrain 
-            is capable of.
-            keys (string)  : idx_pt, idx_grad
-            values         : fn(idx,pt), fn(idx,pt,grad) [not yet fn(pts), fn(pts, grads)]
+            Historically it was an array of weights in [0,1] (one weight per
+            point, used to multiply gradients).  Now it is either 0/1 for an
+            easy translation to existing constraints framework.
+            This is useful when providing a numpy array for the initial
+            embedding positions (``init`` parameter of the ``UMAP`` class).
+            A 2-D 0/1 mask can supply different updating weight to each
+            dimension of each sample.
+
+            Constraint dictionary:
+            Allows user-defined constraints of a few types (keys).  Values are
+            numba jit functions that (in contrast to constructor
+            ``output_constrain``) may use the index of X for point-specific
+            constraints (like pinning.
+
+            keys (string)  : 'idx_pt', 'idx_grad'
+
+            values         : fn(idx,pt), fn(idx,pt,grad)
+                             [not yet fn(pts), fn(pts, grads)]
+
+            'idx_pt' and 'idx_grad' constraints are applied as each point gets
+            moved during gradient descent.  TODO: epoch or final constraints,
+            like centering the embedding around zero.
+
+            Currently, it is **important** that your numba jit functions
+            perform**in-place** modifications -- beware of using the `=`
+            assignment operator in your numba jit functions!
         """
 
         X = check_array(X, dtype=np.float32, accept_sparse="csr", order="C")
@@ -2436,7 +2461,7 @@ class UMAP(BaseEstimator):
                 self.local_connectivity,
                 True, # apply_set_operations
                 self.verbose,
-                self.densmap or self.output_dens,
+                self.densmap or self.output_dens,   # return_dists
             )
             # Report the number of vertices with degree 0 in our our umap.graph_
             # This ensures that they were properly disconnected.
@@ -2497,12 +2522,12 @@ class UMAP(BaseEstimator):
                 random_state,
                 "precomputed",
                 self._metric_kwds,
-                None,
-                None,
+                None,   # _knn_indices
+                None,   # _knn_dists
                 self.angular_rp_forest,
                 self.set_op_mix_ratio,
                 self.local_connectivity,
-                True,
+                True,   # apply_set_operations
                 self.verbose,
                 self.densmap or self.output_dens,
             )
@@ -2568,7 +2593,7 @@ class UMAP(BaseEstimator):
                 self.angular_rp_forest,
                 self.set_op_mix_ratio,
                 self.local_connectivity,
-                True,
+                True,   # apply_set_operations
                 self.verbose,
                 self.densmap or self.output_dens,
             )
@@ -2656,12 +2681,13 @@ class UMAP(BaseEstimator):
                         random_state,
                         "precomputed",
                         self._target_metric_kwds,
-                        None,
-                        None,
-                        False,
-                        1.0,
-                        1.0,
-                        False,
+                        None,   # _knn_indices
+                        None,   # _knn_dists
+                        False,  # angular_rp_forest
+                        1.0,    # set_op_mix_ratio
+                        1.0,    # local_connectivity
+                        False,  # verbose
+                        # return_dists=None
                     )
                 else:
                     # Standard case
@@ -2671,12 +2697,13 @@ class UMAP(BaseEstimator):
                         random_state,
                         self.target_metric,
                         self._target_metric_kwds,
-                        None,
-                        None,
-                        False,
-                        1.0,
-                        1.0,
-                        False,
+                        None,   # _knn_indices
+                        None,   # _knn_dists
+                        False,  # angular_rp_forest
+                        1.0,    # set_op_mix_ratio
+                        1.0,    # local_connectivity
+                        False,  # verbose
+                        # return_dists=None
                     )
                 # product = self.graph_.multiply(target_graph)
                 # # self.graph_ = 0.99 * product + 0.01 * (self.graph_ +
@@ -2770,8 +2797,8 @@ class UMAP(BaseEstimator):
             self._output_distance_func,
             self._output_metric_kwds,
             self.output_metric in ("euclidean", "l2"), # euclidean_output?
-            self.output_constrain, # slide this one in automatically.  Ignored, for now
-            data_constrain, # project points knowing index in X
+            self.output_constrain, # generic projections of points/gradients
+            data_constrain, # project points/gradients knowing index in X
             self.random_state is None, # parallel?
             self.verbose,
         )
@@ -3013,7 +3040,7 @@ class UMAP(BaseEstimator):
                 self._a,
                 self._b,
                 rng_state,
-                self.repulsion_strength, # gamma
+                self.repulsion_strength,   # gamma
                 self._initial_alpha / 4.0, # initial_alpha
                 self.negative_sample_rate,
                 self.random_state is None, # parallel

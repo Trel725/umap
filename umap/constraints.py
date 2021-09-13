@@ -2,6 +2,11 @@ import numpy as np
 import numba
 from numba.experimental import jitclass
 
+# Constraints are applied to "standard" Euclidean embeddings.
+#   i.e. optimize_layout_euclidean in layouts.py
+# They are not applied to optimize_layout_generic (with 'output_metric')
+# They are not applied to optimize_layout_aligned_euclidean (yet?).
+
 #
 # There are 2 broad class of constraint:
 #
@@ -22,6 +27,8 @@ from numba.experimental import jitclass
 # Using jitclass, many "usability features" of python are not available,
 # so more care needs to be taken to construct with right-typed arguments.
 # layouts.py requires in-place mods, so be careful about '=' operator.
+# Note: jitclass is NOT used, due to numba issues -- dumber interface now
+#       just uses C funcs
 #
 # "Hard" constraints, enforcing an inequality or equality condition, are fairly
 # straight-forward.  "Soft" constraints really behave as "auxiliary forces" and
@@ -40,13 +47,15 @@ from numba.experimental import jitclass
 # and again does not really evoke the usual idea of tangent space.
 #
 
-# Multiple constraints can be supplied as a dictionary:
-# "grad"    HardPinIndexed, PinNoninf, SoftPinIndexed, Densmap
-# "point"   DimLohi, (HardPinIndexed, PinNoninf)
-# "cloud"   project_rows_onto_constraint PinNoninf,...
-# 'epoch'
-# 'pin'
-#  ...
+#   Remove this ability -- now you supply a single function
+# Old way (with classes)
+#     Multiple constraints can be supplied as a dictionary:
+#     "grad"    HardPinIndexed, PinNoninf, SoftPinIndexed, Densmap
+#     "point"   DimLohi, (HardPinIndexed, PinNoninf)
+#     "cloud"   project_rows_onto_constraint PinNoninf,...
+#     'epoch'
+#     'pin'
+#      ...
 
 # For jit purposes, though, the constraint types must be fully known
 # This causes some issues.  Easiest for now is to supply a single
@@ -419,6 +428,12 @@ def test_pinindexed():
     # ...
     assert np.all( y[6,:] == 0.0 )
     assert np.all( y[7,:] == 1.0 )
+
+    # verify that zero-length x_ind, x_pos yield no-op
+
+    # test conversion from 1-D array of 0/1 values to pinindexed,
+    # as well as trivial case of all "pin_mask" entries 0 (or inf)
+    
     print("test pinindexed OK")
 
 def test_freeinf():
@@ -496,6 +511,12 @@ def test_freeinf():
     #pts[idxs,:] = freeinf_pt(idxs, data[idxs,:].copy(), *tupargs)
     #print("pts[i,:]",pts[i,:])
 
+    # verify that all-inf yields no-op projections (all dims of all points free)
+    # verify that none-inf yields all points fixed (and zero gradients)
+
+    # test conversion from 2-D array of 0/1 values to a freeinf function
+    # as well as trivial case of all points allowed to move(?)
+    
     #print("pts", "\n", pts)
     print("test freeinf OK")
 
