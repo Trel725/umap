@@ -541,7 +541,7 @@ def optimize_layout_euclidean(
             for i in pin_mask.size:
                 if pin_mask[i]:
                     idxs.extend(i)
-            print("pin_mask 1d point indices", idxs)
+            print("pin_mask 1d:",  len(point_indices), "points don't move")
             fixed_pos_idxs = np.array(idxs)
             # todo [opt]: no-op if zero points were fixed
             @numba.njit()
@@ -553,20 +553,23 @@ def optimize_layout_euclidean(
         elif len(pin_mask.shape) == 2:
             assert pin_mask.shape == head_embedding.shape
             # DEBUG:
-            for i in range(pin_mask.shape[0]):
-                for d in range(dim):
-                    if pin_mask[i,d] == 0.0:
-                        print("sample",i,"pin head[",d,"] begins at",head_embedding[i,d])
-            # v.2 translate zeros in pin_mask to embedding values; nonzeros become np.inf
+            #for i in range(pin_mask.shape[0]):
+            #    for d in range(dim):
+            #        if pin_mask[i,d] == 0.0:
+            #            print("sample",i,"pin head[",d,"] begins at",head_embedding[i,d])
+            # v.2 translates zeros in pin_mask to embedding values; nonzeros become np.inf
             # and then uses a 'freeinf' constraint from constraints.py
+            # Current fixed point dimensions are copied into the constraint itself.
             freeinf_arg = np.where( pin_mask == 0.0, head_embedding, np.float32(np.inf) )
+            print("pin_mask 2d:", np.sum(pin_mask==0.0), "dimensions of data set shape",
+                  pin_mask.shape, "are held fixed")
             # original approach
             @numba.njit()
             def pin_mask_constraint(idx,pt):
                 con.freeinf_pt( idx, pt, freeinf_arg )
             fns_idx_pt = [pin_mask_constraint,]
             have_constraints = True
-            # OR mirror a tuple-based approach
+            # OR mirror a tuple-based approach (REMOVED)
             #pin_mask_constraint_tuple = (con.freeinf_pt, freeinf_arg,)
             #@numba.njit()
             #def pin_mask_constraint2(idx,pt):
