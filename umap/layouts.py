@@ -124,6 +124,37 @@ def _chain_pt(fs, inner=None):
         return wrap
 #
 
+# for code clarity ... reduce code duplication
+@numba.njit()
+def _apply_grad(idx, pt, alpha, grad, fn_idx_grad, fn_grad, fn_idx_pt, fn_pt):
+    """ updates pt by (projected?) grad and any pt projection functions.
+
+    idx:    point number
+    pt:     point vector
+    alpha:  learning rate
+    grad:   gradient vector
+    fn_...: constraint functions (or None)
+    
+    Both pt and grad may be modified.
+    """
+    _doclip = False
+    if fn_idx_grad is not None:
+        fn_idx_grad(idx, pt, grad)  # grad (pt?) may change
+        _doclip = True
+    if fn_grad is not None:
+        fn_grad(pt, grad)         # grad (pt?) may change
+        _doclip = True
+    if _doclip:
+        # inplace clipping fn ?
+        grad = clip_array(grad)
+
+    pt += alpha * grad
+
+    if fn_idx_pt is not None:
+        fn_idx_pt(idx, pt)
+    if fn_pt is not None:
+        fn_pt(pt)
+    # no return value -- pt and grad mods are IN-PLACE.
 
 def _optimize_layout_euclidean_single_epoch(
     head_embedding,
@@ -143,10 +174,10 @@ def _optimize_layout_euclidean_single_epoch(
     epoch_of_next_negative_sample,
     epoch_of_next_sample,
     n,              # epoch
-    wrap_idx_pt,
-    wrap_idx_grad,
-    wrap_pt,
-    wrap_grad,
+    wrap_idx_pt,    # NEW: constraint fn(idx,pt) or None
+    wrap_idx_grad,  #      constraint fn(idx,pt,grad) or None
+    wrap_pt,        #      constraint fn(pt) or None
+    wrap_grad,      #      constraint fn(pt,grad) or None
     densmap_flag,
     dens_phi_sum,
     dens_re_sum,
@@ -161,6 +192,9 @@ def _optimize_layout_euclidean_single_epoch(
     #if constraints is None:
     #    constraints = {}
 
+    # SUBJECT TO CHANGE ... should this be a user responsibility?
+    #                       or handled in some other place?
+    # WHEN CONSTRAINTS WERE FULLY-FLESHED-OUT PROJECTION OBJECTS ...
     #if 'grad' in constraints:
     #    # grad constraints include hard-pinning.  This needs points to be "OK"
     #    # before zeroing the gradients in tangent_space.   Soft force constraints
@@ -182,6 +216,9 @@ def _optimize_layout_euclidean_single_epoch(
     #if wrap_idx_grad is not None: print("wrap_idx_grad",wrap_idx_grad)
     #if wrap_pt is not None: print("wrap_pt",wrap_pt)
     #if wrap_grad is not None: print("wrap_grad",wrap_grad)
+
+    # catch simplifying assumptions
+    #   TODO: Work through constraint correctness when these fail!
     assert head_embedding.shape == tail_embedding.shape  # nice for constraints
     assert np.all(head_embedding == tail_embedding)
 
@@ -189,16 +226,15 @@ def _optimize_layout_euclidean_single_epoch(
         if epoch_of_next_sample[i] <= n:
             j = head[i]
             k = tail[i]
-            #if j==12: print("j==12")
 
             current = head_embedding[j]
             other = tail_embedding[k]
-            #if len(constrain_idx_pt) and j==13: print("+head13", head_embedding[13])
-            #if len(constrain_idx_pt) and k==13: print("+tail13", head_embedding[13])
 
             dist_squared = rdist(current, other)
 
             if densmap_flag:
+                # Note that densmap could, if you wish, be viewed as a
+                # "constraint" in that it's a "gradient modification function"
                 phi = 1.0 / (1.0 + a * pow(dist_squared, b))
                 dphi_term = (
                     a * b * pow(dist_squared, b - 1) / (1.0 + a * pow(dist_squared, b))
@@ -254,44 +290,18 @@ def _optimize_layout_euclidean_single_epoch(
             grad_d = clip_array(grad_coeff * delta)
             if densmap_flag:
                 grad_d += clip_array(2 * grad_cor_coeff * delta)
+            # simplification (a little non-equivalent)
+            # TODO: verify shape of grad_cor_coeff and do only a single clip ...
+
+
             current_grad = grad_d.copy()
-
-            doclip = False
-            if wrap_idx_grad is not None:
-                wrap_idx_grad(j, current, current_grad)
-                doclip = True
-            if wrap_grad is not None:
-                wrap_grad(current, current_grad)
-                doclip = True
-            if doclip:
-                current_grad = clip_array(current_grad)
-
-            current += alpha * current_grad
-            if wrap_idx_pt is not None:
-                wrap_idx_pt(j, current)
-            if wrap_pt is not None:
-                #c0 = current.copy()
-                wrap_pt(current)
-                #print("wrap_pt:",c0,"-->",current)
+            _apply_grad(j, current, alpha, current_grad,
+                        wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
 
             if move_other:
                 other_grad = -grad_d
-
-                doclip = False
-                if wrap_idx_grad is not None:
-                    wrap_idx_grad(k, other, other_grad)
-                    doclip = True
-                if wrap_grad is not None:
-                    wrap_grad(other, other_grad)
-                    doclip = True
-                if doclip:
-                    other_grad = clip_array(other_grad)
-
-                other += alpha * other_grad
-                if wrap_idx_pt is not None:
-                    wrap_idx_pt(k, other)
-                if wrap_pt is not None:
-                    wrap_pt(other)
+                _apply_grad(k, other, alpha, other_grad,
+                            wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
 
             epoch_of_next_sample[i] += epochs_per_sample[i]
 
@@ -319,56 +329,26 @@ def _optimize_layout_euclidean_single_epoch(
                 if grad_coeff > 0.0:
                     grad_d = clip_array(grad_coeff * (current - other))
                 else:
-                    # [ejk] quite strange.
-                    #       Perhaps "do anything to avoid accidental superpositions"
+                    # [ejk] seems strange
+                    #       Is this "anything to avoid accidental superpositions"?
+                    #       (why not randomly +/-4?)
                     grad_d = np.full(dim, 4.0)
+
                 current_grad = grad_d.copy()
-
-                doclip = False
-                if wrap_idx_grad is not None:
-                    wrap_idx_grad(j, current, current_grad)
-                    doclip = True
-                if wrap_grad is not None:
-                    wrap_grad(current, current_grad)
-                    doclip = True
-                if doclip:
-                    current_grad = clip_array(current_grad)
-
-                current += alpha * current_grad
-                if wrap_idx_pt is not None:
-                    wrap_idx_pt(j, current)
-                if wrap_pt is not None:
-                    wrap_pt(current)
+                _apply_grad(j, current, alpha, current_grad,
+                            wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
 
                 # following is needed for correctness if tail==head
                 if move_other:
                     other_grad = -grad_d
-
-                    doclip = False
-                    if wrap_idx_grad is not None:
-                        wrap_idx_grad(k, other, other_grad)
-                        doclip = True
-                    if wrap_grad is not None:
-                        wrap_grad(other, other_grad)
-                        doclip = True
-                    if doclip:
-                        other_grad = clip_array(other_grad)
-
-                    other += alpha * other_grad
-                    if wrap_idx_pt is not None:
-                        wrap_idx_pt(k, other)
-                    if wrap_pt is not None:
-                        wrap_pt(other)
-
-            #if len(constrain_idx_pt) and j==13: print("+head13", head_embedding[13])
-            #if len(constrain_idx_pt) and k==13: print("+tail13", head_embedding[13])
+                    _apply_grad(k, other, alpha, other_grad,
+                                wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
 
             epoch_of_next_negative_sample[i] += (
                 n_neg_samples * epochs_per_negative_sample[i]
             )
-    #if len(constrain_idx_pt):
-    #print("final head_embeding[13]", head_embedding[13])
-    #print("final tail_embeding[13]", tail_embedding[13])
+        # END if epoch_of_next_sample[i] <= n:
+    # END for i in numba.prange(epochs_per_sample.shape[0]):
 
 
 def _optimize_layout_euclidean_densmap_epoch_init(
@@ -424,7 +404,7 @@ def optimize_layout_euclidean(
     densmap=False,
     densmap_kwds={},
     move_other=False,
-    output_constrain=None, # TBD: independent of head_embedding index
+    output_constrain=None, # independent of head_embedding index
     pin_mask=None, # dict of constraints (or ndarray of 0/1 mask)
 ):
     """Improve an embedding using stochastic gradient descent to minimize the
@@ -492,8 +472,25 @@ def optimize_layout_euclidean(
         The optimized embedding.
     """
 
-    #print("optimize_layout_euclidean")
-    #print("head,tail shapes",head_embedding.shape, tail_embedding.shape)
+    if True:
+        print("optimize_layout_euclidean")
+        print(type(head_embedding), head_embedding.dtype if isinstance(head_embedding, np.ndarray) else "")
+        print(type(tail_embedding), tail_embedding.dtype if isinstance(tail_embedding, np.ndarray) else "")
+        print(type(head), head.dtype if isinstance(head, np.ndarray) else "")
+        print(type(tail), tail.dtype if isinstance(tail, np.ndarray) else "")
+        print(type(n_epochs))
+        print(type(epochs_per_sample), epochs_per_sample.dtype if isinstance(epochs_per_sample, np.ndarray) else "")
+        print("a,b", type(a), type(b))
+        print("rng_state", rng_state,type(rng_state))
+        print("gamma, initial_alpha", type(gamma), type(initial_alpha))
+        print("negative_sample_rate", type(negative_sample_rate))
+        print("parallel, verbose, densmap", type(parallel) ,type(verbose), type(densmap))
+        print("densmap_kwds", densmap_kwds)
+        print("move_other", move_other)
+        print("output_constrain", output_constrain)
+        print("pin_mask", type(pin_mask))
+        print("head,tail shapes", head_embedding.shape, tail_embedding.shape)
+
     dim = head_embedding.shape[1]
     #move_other = head_embedding.shape[0] == tail_embedding.shape[0]
     alpha = initial_alpha
@@ -580,14 +577,10 @@ def optimize_layout_euclidean(
         else:
             raise ValueError("pin_mask data_constrain must be a 1 or 2-dim array")
 
-        # XXX Oops? can delete this one.
-        #optimize_fn = numba.njit(
-        #    _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel,
-        #)
-
     # call a tuple of jit functions(idx,pt) in sequential order
     #   This did NOT work so well.  Possibly numba issues?
-    print("fns_idx_pt",fns_idx_pt)
+    #print("fns_idx_pt",fns_idx_pt)
+    #print("fns_idx_grad",fns_idx_grad)
     # Note: _chain_idx_pt has some numba issues
     #       todo: get rid of list fns_idx_pt etc (not useful)
     wrap_idx_pt = None # or con.noop_pt
@@ -616,17 +609,36 @@ def optimize_layout_euclidean(
             if k == 'epoch_pt': outconstrain_epoch_pt = fn; have_constraints=True
             if k == 'final_pt': outconstrain_final_pt = fn; have_constraints=True
 
-    # We no longer have separate paths, like the original "pin_mask" pull request.
-    #if have_constraints:
-    #    if wrap_idx_pt is not None: print("wrap_idx_pt",wrap_idx_pt)
-    #    if wrap_idx_grad is not None: print("wrap_idx_grad",wrap_idx_grad)
-    #    if outconstrain_pt is not None: print("outconstrain_pt",outconstrain_pt)
-    #    if outconstrain_grad is not None: print("outconstrain_grad",outconstrain_grad)
-    #    if outconstrain_epoch_pt is not None: print("outconstrain_epoch_pt",outconstrain_epoch_pt)
-    #    if outconstrain_final_pt is not None: print("outconstrain_final_pt",outconstrain_final_pt)
+    if False and have_constraints:
+        if wrap_idx_pt is not None: print("wrap_idx_pt",wrap_idx_pt)
+        if wrap_idx_grad is not None: print("wrap_idx_grad",wrap_idx_grad)
+        if outconstrain_pt is not None: print("outconstrain_pt",outconstrain_pt)
+        if outconstrain_grad is not None: print("outconstrain_grad",outconstrain_grad)
+        if outconstrain_epoch_pt is not None: print("outconstrain_epoch_pt",outconstrain_epoch_pt)
+        if outconstrain_final_pt is not None: print("outconstrain_final_pt",outconstrain_final_pt)
 
+    #print("parallel=",parallel)
+    #print("rng_state",rng_state,type(rng_state))
+
+    #
+    # TODO: fix numba errors with parallel=True
+    #       There is an issue in numba with 
+	# No implementation of function Function(<function runtime_broadcast_assert_shapes at 0x7f0bdd45be50>) found for signature:
+	# 
+	# >>> runtime_broadcast_assert_shapes(Literal[int](1), array(float64, 1d, C))
+	# 
+	#There are 2 candidate implementations:
+	# - Of which 2 did not match due to:
+	# Overload in function 'register_jitable.<locals>.wrap.<locals>.ov_wrap': File: numba/core/extending.py: Line 151.
+	#   With argument(s): '(int64, array(float64, 1d, C))':
+	#  Rejected as the implementation raised a specific error:
+	#    TypeError: missing a required argument: 'arg1'
+	#  raised from /home/ml/kruus/anaconda3/envs/miru/lib/python3.9/inspect.py:2977
+    #
     optimize_fn = numba.njit(
-        _optimize_layout_euclidean_single_epoch, fastmath=True, parallel=parallel
+        _optimize_layout_euclidean_single_epoch, fastmath=True,
+        parallel=False,
+        # parallel=parallel,  # <--- Can this be re-enabled?
     )
 
     if densmap:

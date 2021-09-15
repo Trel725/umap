@@ -1092,6 +1092,7 @@ def simplicial_set_embedding(
             low=-10.0, high=10.0, size=(graph.shape[0], n_components)
         ).astype(np.float32)
     elif isinstance(init, str) and init == "spectral":
+        #print("spectral init BEGIN")
         # We add a little noise to avoid local minima for optimization to come
         initialisation = spectral_layout(
             data,
@@ -1101,6 +1102,7 @@ def simplicial_set_embedding(
             metric=metric,
             metric_kwds=metric_kwds,
         )
+        #print("spectral init DONE")
         expansion = 10.0 / np.abs(initialisation).max()
         embedding = (initialisation * expansion).astype(
             np.float32
@@ -1109,6 +1111,7 @@ def simplicial_set_embedding(
         ).astype(
             np.float32
         )
+        #print("spectral embedding scaled and float32")
     else:
         init_data = np.array(init)
         if len(init_data.shape) == 2:
@@ -2407,6 +2410,8 @@ class UMAP(BaseEstimator):
             X.sort_indices()
 
         random_state = check_random_state(self.random_state)
+        #print("self.random_state=",self.random_state)
+        #print("random_state=",random_state)
 
         if self.verbose:
             print("Construct fuzzy simplicial set")
