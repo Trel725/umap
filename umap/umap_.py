@@ -2772,12 +2772,14 @@ class UMAP(BaseEstimator):
                 print("init.shape          ", init.shape)
                 print("data_constrain.shape", data_constrain.shape)
                 assert( data_constrain.shape == init.shape
-                       or data_constrain.shape == init.shape[0] )
+                       or (data_constrain.ndim==1 and data_constrain.shape[0] == init.shape[0]) )
                 # DEBUG:
-                #print("_fit_embed_data pinned init items")
-                #for i in range(init.shape[0]):
-                #    if np.any(data_constrain[i,] == 0.0):
-                #        print("sample",i,"pins",data_constrain[i,],"init",init[i,])
+                if self.verbose:
+                    print("_fit_embed_data pinned init items")
+                    for i in range(init.shape[0]):
+                        if np.any(data_constrain[i,] == 0.0):
+                            print("sample",i,"pins",data_constrain[i,],"init",init[i,])
+
         if self.output_constrain is not None:
             # _validate_parameters ensures it must be a dict
             print("output_constrain keys", self.output_constrain.keys())

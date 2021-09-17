@@ -125,6 +125,9 @@ def _chain_pt(fs, inner=None):
 #
 
 # for code clarity ... reduce code duplication
+# Is numba jit able to elide "is not None" code blocks?
+#    Quick tests show that using 'None' (or optional), numba may fail
+#    to elide the code block :(  (used env NUMBA_DEBUG to check simple cases)
 @numba.njit()
 def _apply_grad(idx, pt, alpha, grad, fn_idx_grad, fn_grad, fn_idx_pt, fn_pt):
     """ updates pt by (projected?) grad and any pt projection functions.
@@ -472,7 +475,7 @@ def optimize_layout_euclidean(
         The optimized embedding.
     """
 
-    if True:
+    if False:
         print("optimize_layout_euclidean")
         print(type(head_embedding), head_embedding.dtype if isinstance(head_embedding, np.ndarray) else "")
         print(type(tail_embedding), tail_embedding.dtype if isinstance(tail_embedding, np.ndarray) else "")
@@ -528,17 +531,17 @@ def optimize_layout_euclidean(
         # I'm trying to avoid numba 0.53 warnings (about firstclass functions)
 
     else:
-        print("pin_mask")
+        print("pin_mask", pin_mask.size, pin_mask.shape)
         assert (isinstance(pin_mask, np.ndarray))
         if len(pin_mask.shape) == 1:
             assert pin_mask.shape[0] == head_embedding.shape[0]
             # let's use pinindexed_grad for this one
             # (it's a more stringent test)
             idxs = []
-            for i in pin_mask.size:
-                if pin_mask[i]:
-                    idxs.extend(i)
-            print("pin_mask 1d:",  len(point_indices), "points don't move")
+            for i in range(pin_mask.size):
+                if pin_mask[i]==0.0:
+                    idxs.append(i)
+            print("pin_mask 1d:",  len(idxs), "points don't move")
             fixed_pos_idxs = np.array(idxs)
             # todo [opt]: no-op if zero points were fixed
             @numba.njit()
@@ -735,8 +738,9 @@ def optimize_layout_euclidean(
         # Should outconstrain_epoch_pt run before epoch loop too?
         if outconstrain_epoch_pt is not None:
             outconstrain_final_pt(head_embedding)
-            if move_other: # ... maybe ? XXX
-                outconstrain_final_pt(tail_embedding)
+            # not sure move_other ...  XXX
+            #if move_other:
+            #    outconstrain_final_pt(tail_embedding)
 
         alpha = initial_alpha * (1.0 - (float(n) / float(n_epochs)))
 
