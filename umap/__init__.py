@@ -35,7 +35,9 @@ import numba
 
 import pkg_resources
 
-try:
-    __version__ = pkg_resources.get_distribution("umap-learn").version
-except pkg_resources.DistributionNotFound:
-    __version__ = "0.5-dev"
+#try:
+#    __version__ = pkg_resources.get_distribution("umap-learn").version
+#except pkg_resources.DistributionNotFound:
+#    __version__ = "0.5-dev"
+# [ejk] above was getting confused with another local 0.3.9 install...
+__version__ = "0.5-dev"

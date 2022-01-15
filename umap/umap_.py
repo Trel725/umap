@@ -2760,6 +2760,10 @@ class UMAP(BaseEstimator):
 
         return self
 
+    # [ejk] hack XXX removed the '_' for now (should subclass!)
+    def fit_embed_data(self, X, n_epochs, init, random_state, data_constrain):
+        return self._fit_embed_data(X,n_epochs,init,random_state,data_constrain)
+
     def _fit_embed_data(self, X, n_epochs, init, random_state, data_constrain):
         """A method wrapper for simplicial_set_embedding that can be
         replaced by subclasses.

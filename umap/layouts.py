@@ -354,6 +354,11 @@ def _optimize_layout_euclidean_single_epoch(
     # END for i in numba.prange(epochs_per_sample.shape[0]):
 
 
+_opt_euclidean = numba.njit(_optimize_layout_euclidean_single_epoch,
+                            fastmath=True, parallel=False,)
+_opt_euclidean_para = numba.njit(_optimize_layout_euclidean_single_epoch,
+                                 fastmath=True, parallel=True,)
+
 def _optimize_layout_euclidean_densmap_epoch_init(
     head_embedding,
     tail_embedding,
@@ -638,11 +643,14 @@ def optimize_layout_euclidean(
 	#    TypeError: missing a required argument: 'arg1'
 	#  raised from /home/ml/kruus/anaconda3/envs/miru/lib/python3.9/inspect.py:2977
     #
-    optimize_fn = numba.njit(
-        _optimize_layout_euclidean_single_epoch, fastmath=True,
-        parallel=False,
-        # parallel=parallel,  # <--- Can this be re-enabled?
-    )
+    #optimize_fn = numba.njit(
+    #    _optimize_layout_euclidean_single_epoch, fastmath=True,
+    #    #parallel=False,
+    #    parallel=parallel,  # <--- Can this be re-enabled?
+    #)
+    #optimize_fn = _opt_euclidean
+    optimize_fn = (_opt_euclidean_para if parallel
+                   else _opt_euclidean)
 
     if densmap:
         dens_init_fn = numba.njit(
@@ -1236,6 +1244,10 @@ def _optimize_layout_aligned_euclidean_single_epoch(
                     n_neg_samples * epochs_per_negative_sample[m][i]
                 )
 
+_opt_euclidean_aligned = numba.njit( _optimize_layout_aligned_euclidean_single_epoch,
+                                    fastmath=True, parallel=False,)
+_opt_euclidean_aligned_para = numba.njit(_optimize_layout_aligned_euclidean_single_epoch,
+                                         fastmath=True, parallel=True,)
 
 def optimize_layout_aligned_euclidean(
     head_embeddings,
@@ -1275,11 +1287,13 @@ def optimize_layout_aligned_euclidean(
         )
         epoch_of_next_sample.append(epochs_per_sample[m].astype(np.float32))
 
-    optimize_fn = numba.njit(
-        _optimize_layout_aligned_euclidean_single_epoch,
-        fastmath=True,
-        parallel=parallel,
-    )
+    #optimize_fn = numba.njit(
+    #    _optimize_layout_aligned_euclidean_single_epoch,
+    #    fastmath=True,
+    #    parallel=parallel,
+    #)
+    optimize_fn = (_opt_euclidean_aligned_para if parallel
+                   else _opt_euclidean_aligned)
 
     for n in range(n_epochs):
         optimize_fn(
