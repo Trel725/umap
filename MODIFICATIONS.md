@@ -13,3 +13,12 @@
 - Consider also borrowing PyMDE's **_constraint_** viewpoint,  
 as a projection of points (or gradients)  
 onto some _manifold_ (or tangent plane)
+
+## todo
+- I suspect I'd rather use a dense hi-D representation, because
+  its distance metric might be more "diffusion-ready".   If sparse,
+  too many things might overlap in "only a few ways" so "diffusion"
+  is less well defined. (connectivity can be too coarse-grained).
+
+- ? how to handle time-dependence?
+  i.e. interval events (text passages, movie segments)

@@ -7,6 +7,7 @@ import umap.constraints as con
 layout_version = 3
 #from umap.constraints import DimLohi, constrain_lo, constrain_hi
 #from umap.constraints import HardPinIndexed, PinNoninf
+#from numba import types
 
 
 @numba.njit()
@@ -32,14 +33,17 @@ def clip(val):
 
 @numba.njit()
 def clip_array(arr):
-    """ clip array elementwise. """
+    """ clip array elementwise.  This is MUCH SLOWER than using scalar clip(val) ! """
     return np.where( arr > 4.0, 4.0,
                     np.where(arr < -4.0, -4.0, arr))
+    #for d in arr.shape[0]:
+    #    arr[d] = 4.0 if arr[d] > 4.0 else -4.0 if arr[d] < -4.0 else arr[d]
 
 @numba.njit(
     "f4(f4[::1],f4[::1])",
     fastmath=True,
     cache=True,
+    inline='always',
     locals={
         "result": numba.types.float32,
         "diff": numba.types.float32,
@@ -124,12 +128,16 @@ def _chain_pt(fs, inner=None):
         return wrap
 #
 
+#
+# REMOVED apply_grad -- it is MUCH faster when inlined
+#                     -- it is only used 4 times
 # for code clarity ... reduce code duplication
 # Is numba jit able to elide "is not None" code blocks?
 #    Quick tests show that using 'None' (or optional), numba may fail
 #    to elide the code block :(  (used env NUMBA_DEBUG to check simple cases)
-@numba.njit()
-def _apply_grad(idx, pt, alpha, grad, fn_idx_grad, fn_grad, fn_idx_pt, fn_pt):
+#@numba.njit() # use to inspect
+@numba.njit(inline='always')
+def apply_grad(idx, pt, alpha, grad, fn_idx_grad, fn_grad, fn_idx_pt, fn_pt):
     """ updates pt by (projected?) grad and any pt projection functions.
 
     idx:    point number
@@ -140,7 +148,10 @@ def _apply_grad(idx, pt, alpha, grad, fn_idx_grad, fn_grad, fn_idx_pt, fn_pt):
     
     Both pt and grad may be modified.
     """
+    # can i get _doclip as a constant?
     _doclip = False
+    #_doclip = (fn_idx_grad is not None or fn_grad is not None)
+    #_doclip = isinstance(fn_idx_grad, types.NoneType) or isinstance(fn_grad,  types.NoneType)
     if fn_idx_grad is not None:
         fn_idx_grad(idx, pt, grad)  # grad (pt?) may change
         _doclip = True
@@ -148,16 +159,514 @@ def _apply_grad(idx, pt, alpha, grad, fn_idx_grad, fn_grad, fn_idx_pt, fn_pt):
         fn_grad(pt, grad)         # grad (pt?) may change
         _doclip = True
     if _doclip:
-        # inplace clipping fn ?
-        grad = clip_array(grad)
-
-    pt += alpha * grad
+        for d in range(pt.shape[0]):
+            pt[d] = pt[d] + alpha * clip(grad[d])
+    else:
+        for d in range(pt.shape[0]):
+            pt[d] = pt[d] + alpha * grad[d]
 
     if fn_idx_pt is not None:
         fn_idx_pt(idx, pt)
     if fn_pt is not None:
         fn_pt(pt)
     # no return value -- pt and grad mods are IN-PLACE.
+@numba.njit() # use to inspect
+#@numba.njit(inline='always')
+def apply_grad0(idx, pt, alpha, grad, fn_idx_grad, fn_grad, fn_idx_pt, fn_pt):
+    """ updates pt by (projected?) grad and any pt projection functions.
+
+    idx:    point number
+    pt:     point vector
+    alpha:  learning rate
+    grad:   gradient vector
+    fn_...: constraint functions (or None)
+    
+    Both pt and grad may be modified.
+    """
+    # can i get _doclip as a constant?
+    _doclip = (fn_idx_grad is not None or fn_grad is not None)
+    if fn_idx_grad is not None:
+        fn_idx_grad(idx, pt, grad)  # grad (pt?) may change
+        #_doclip = True
+    if fn_grad is not None:
+        fn_grad(pt, grad)         # grad (pt?) may change
+        #_doclip = True
+    if _doclip:
+        for d in range(pt.shape[0]):
+            pt[d] = pt[d] + alpha * clip(grad[d])
+    else:
+        for d in range(pt.shape[0]):
+            pt[d] = pt[d] + alpha * grad[d]
+
+    if fn_idx_pt is not None:
+        fn_idx_pt(idx, pt)
+    if fn_pt is not None:
+        fn_pt(pt)
+    # no return value -- pt and grad mods are IN-PLACE.
+
+# did not work out...
+#@numba.generated_jit(nopython=True)
+#def apply_grad2(idx, pt, alpha, grad, fn_idx_grad, fn_grad, fn_idx_pt, fn_pt):
+#    """ updates pt by (projected?) grad and any pt projection functions.
+#
+#    idx:    point number
+#    pt:     point vector
+#    alpha:  learning rate
+#    grad:   gradient vector
+#    fn_...: constraint functions (or None)
+#    
+#    Both pt and grad may be modified.
+#    """
+#    prog = []
+#    _doclip = False
+#    if not isinstance(fn_idx_grad,type(None)):
+#        prog.append("fn_idx_grad(idx, pt, grad)") # grad (pt?) may change
+#        _doclip = True
+#    if not isinstance(fn_grad,type(None)):
+#        prog.append("fn_grad(pt, grad)")          # grad (pt?) may change
+#        _doclip = True
+#    if _doclip:
+#        # inplace clipping fn ?
+#        prog.append("grad = clip_array(grad)")
+#
+#    prog.append("pt += alpha * grad")
+#
+#    if not isinstance(fn_idx_pt,type(None)):
+#        prog.append("fn_idx_pt(idx, pt)")
+#    if not isinstance(fn_pt,type(None)):
+#        prog.append("fn_pt(pt)")
+#    
+#    foostr = 'def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):\n' + '\n'.join(' '+l for l in prog)
+#    print(foostr)
+#    eval(foostr)
+#    return myfoo
+
+#@numba.generated_jit(nopython=True)
+##@numba.extending.overload(apply_grad)
+#def apply_grad3(idx, pt, alpha, grad, fn_idx_grad, fn_grad, fn_idx_pt, fn_pt):
+#    """ updates pt by (projected?) grad and any pt projection functions.
+#
+#    idx:    point number
+#    pt:     point vector
+#    alpha:  learning rate
+#    grad:   gradient vector
+#    fn_...: constraint functions (or None)
+#    
+#    Both pt and grad may be modified.
+#    """
+#    if fn_idx_grad is not None:
+#        if fn_grad is not None:
+#            if fn_idx_pt is not None:
+#                if fn_pt is not None:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        fn_idx_grad(idx, pt, grad)
+#                        fn_grad(pt, grad)
+#                        grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        fn_idx_pt(idx, pt)
+#                        fn_pt(pt)
+#                    return myfoo
+#                else: # no fn_pt:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        fn_idx_grad(idx, pt, grad)
+#                        fn_grad(pt, grad)
+#                        grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        fn_idx_pt(idx, pt)
+#                        #fn_pt(pt)
+#                    return myfoo
+#            else: # no fn_idx_pt
+#                if fn_pt is not None:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        fn_idx_grad(idx, pt, grad)
+#                        fn_grad(pt, grad)
+#                        grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        #fn_idx_pt(idx, pt)
+#                        fn_pt(pt)
+#                    return myfoo
+#                else:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        fn_idx_grad(idx, pt, grad)
+#                        fn_grad(pt, grad)
+#                        grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        #fn_idx_pt(idx, pt)
+#                        #fn_pt(pt)
+#                    return myfoo
+#        else: # no fn_grad
+#            if fn_idx_pt is not None:
+#                if fn_pt is not None:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        fn_idx_grad(idx, pt, grad)
+#                        #fn_grad(pt, grad)
+#                        grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        fn_idx_pt(idx, pt)
+#                        fn_pt(pt)
+#                    return myfoo
+#                else: # no fn_pt:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        fn_idx_grad(idx, pt, grad)
+#                        #fn_grad(pt, grad)
+#                        grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        fn_idx_pt(idx, pt)
+#                        #fn_pt(pt)
+#                    return myfoo
+#            else: # no fn_idx_pt
+#                if fn_pt is not None:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        fn_idx_grad(idx, pt, grad)
+#                        #fn_grad(pt, grad)
+#                        grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        #fn_idx_pt(idx, pt)
+#                        fn_pt(pt)
+#                    return myfoo
+#                else:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        fn_idx_grad(idx, pt, grad)
+#                        #fn_grad(pt, grad)
+#                        grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        #fn_idx_pt(idx, pt)
+#                        #fn_pt(pt)
+#                    return myfoo
+#    else: # no fn_idx_grad
+#        if fn_grad is not None:
+#            if fn_idx_pt is not None:
+#                if fn_pt is not None:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        #fn_idx_grad(idx, pt, grad)
+#                        fn_grad(pt, grad)
+#                        grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        fn_idx_pt(idx, pt)
+#                        fn_pt(pt)
+#                    return myfoo
+#                else: # no fn_pt:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        #fn_idx_grad(idx, pt, grad)
+#                        fn_grad(pt, grad)
+#                        grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        fn_idx_pt(idx, pt)
+#                        #fn_pt(pt)
+#                    return myfoo
+#            else: # no fn_idx_pt
+#                if fn_pt is not None:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        #fn_idx_grad(idx, pt, grad)
+#                        fn_grad(pt, grad)
+#                        grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        #fn_idx_pt(idx, pt)
+#                        fn_pt(pt)
+#                    return myfoo
+#                else:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        #fn_idx_grad(idx, pt, grad)
+#                        fn_grad(pt, grad)
+#                        grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        #fn_idx_pt(idx, pt)
+#                        #fn_pt(pt)
+#                    return myfoo
+#        else: # no fn_grad
+#            if fn_idx_pt is not None:
+#                if fn_pt is not None:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        #fn_idx_grad(idx, pt, grad)
+#                        #fn_grad(pt, grad)
+#                        #grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        fn_idx_pt(idx, pt)
+#                        fn_pt(pt)
+#                    return myfoo
+#                else: # no fn_pt:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        #fn_idx_grad(idx, pt, grad)
+#                        #fn_grad(pt, grad)
+#                        #grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        fn_idx_pt(idx, pt)
+#                        #fn_pt(pt)
+#                    return myfoo
+#            else: # no fn_idx_pt
+#                if fn_pt is not None:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        #fn_idx_grad(idx, pt, grad)
+#                        #fn_grad(pt, grad)
+#                        #grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        #fn_idx_pt(idx, pt)
+#                        fn_pt(pt)
+#                    return myfoo
+#                else:
+#                    def myfoo(idx,pt,alpha,grad,fn_idx_grad,fn_grad,fn_idx_pt,fn_pt):
+#                        #fn_idx_grad(idx, pt, grad)
+#                        #fn_grad(pt, grad)
+#                        #grad = clip_array(grad)
+#                        pt += alpha * grad
+#                        #fn_idx_pt(idx, pt)
+#                        #fn_pt(pt)
+#                    return myfoo
+#    raise Exception('unhandled apply_grad case')
+
+
+def _optimize_layout_euclidean_single_epoch_applygrad(
+    head_embedding,
+    tail_embedding,
+    head,
+    tail,
+    n_vertices,
+    epochs_per_sample,
+    a,
+    b,
+    rng_state,
+    gamma,
+    dim,
+    move_other,
+    alpha,
+    epochs_per_negative_sample,
+    epoch_of_next_negative_sample,
+    epoch_of_next_sample,
+    n,              # epoch
+    wrap_idx_pt,    # NEW: constraint fn(idx,pt) or None
+    wrap_idx_grad,  #      constraint fn(idx,pt,grad) or None
+    wrap_pt,        #      constraint fn(pt) or None
+    wrap_grad,      #      constraint fn(pt,grad) or None
+    densmap_flag,
+    dens_phi_sum,
+    dens_re_sum,
+    dens_re_cov,
+    dens_re_std,
+    dens_re_mean,
+    dens_lambda,
+    dens_R,
+    dens_mu,
+    dens_mu_tot,
+):
+    #if constraints is None:
+    #    constraints = {}
+
+    # SUBJECT TO CHANGE ... should this be a user responsibility?
+    #                       or handled in some other place?
+    # WHEN CONSTRAINTS WERE FULLY-FLESHED-OUT PROJECTION OBJECTS ...
+    #if 'grad' in constraints:
+    #    # grad constraints include hard-pinning.  This needs points to be "OK"
+    #    # before zeroing the gradients in tangent_space.   Soft force constraints
+    #    # probably have these as no-ops.
+    #    for constraint in constraints['grad']:
+    #        # UNTESTED
+    #        constraint.project_rows_onto_constraint(head_embedding)
+    #        constraint.project_rows_onto_constraint(tail_embedding)
+    #        # once constrained, iteration can just do project_onto_tangent_space
+    #        #                   to zero the required gradients.
+
+    #if len(constrain_idx_pt):
+    #print("_optimize_layout_euclidean_single_epoch")
+    #print("head,tail shapes",head_embedding.shape, tail_embedding.shape)
+    #for j in [13,14]:
+    #    print("init head_embeding[",j,"]", head_embedding[j])
+    #    print("init tail_embeding[",j,"]", tail_embedding[j])
+    #if wrap_idx_pt is not None: print("wrap_idx_pt",wrap_idx_pt)
+    #if wrap_idx_grad is not None: print("wrap_idx_grad",wrap_idx_grad)
+    #if wrap_pt is not None: print("wrap_pt",wrap_pt)
+    #if wrap_grad is not None: print("wrap_grad",wrap_grad)
+
+    # catch simplifying assumptions
+    #   TODO: Work through constraint correctness when these fail!
+    # no vis effect on speed...
+    #assert head_embedding.shape == tail_embedding.shape  # nice for constraints
+    #assert np.all(head_embedding == tail_embedding)
+
+    # mods: optimized in this order...
+    # cliparray     yes: 0.263, 3.755, 0.265        no: .150, 2.08, .146    do not use clip_array
+    # less np vec   yes: .146 .780 .159             no: --"--
+    # more if?      yes: .151 .756 .055 (commented out)
+    for i in numba.prange(epochs_per_sample.shape[0]):
+        grad_d     = np.empty(dim, dtype=head_embedding.dtype)
+        other_grad = np.empty(dim, dtype=head_embedding.dtype)
+        if epoch_of_next_sample[i] <= n:
+            j = head[i]
+            k = tail[i]
+
+            current = head_embedding[j]
+            other = tail_embedding[k]
+
+            dist_squared = rdist(current, other)
+
+            if densmap_flag:
+                # Note that densmap could, if you wish, be viewed as a
+                # "constraint" in that it's a "gradient modification function"
+                phi = 1.0 / (1.0 + a * pow(dist_squared, b))
+                dphi_term = (
+                    a * b * pow(dist_squared, b - 1) / (1.0 + a * pow(dist_squared, b))
+                )
+
+                q_jk = phi / dens_phi_sum[k]
+                q_kj = phi / dens_phi_sum[j]
+
+                drk = q_jk * (
+                    (1.0 - b * (1 - phi)) / np.exp(dens_re_sum[k]) + dphi_term
+                )
+                drj = q_kj * (
+                    (1.0 - b * (1 - phi)) / np.exp(dens_re_sum[j]) + dphi_term
+                )
+
+                re_std_sq = dens_re_std * dens_re_std
+                weight_k = (
+                    dens_R[k]
+                    - dens_re_cov * (dens_re_sum[k] - dens_re_mean) / re_std_sq
+                )
+                weight_j = (
+                    dens_R[j]
+                    - dens_re_cov * (dens_re_sum[j] - dens_re_mean) / re_std_sq
+                )
+
+                grad_cor_coeff = (
+                    dens_lambda
+                    * dens_mu_tot
+                    * (weight_k * drk + weight_j * drj)
+                    / (dens_mu[i] * dens_re_std)
+                    / n_vertices
+                )
+
+            if dist_squared > 0.0:
+                grad_coeff = -2.0 * a * b * pow(dist_squared, b - 1.0)
+                grad_coeff /= a * pow(dist_squared, b) + 1.0
+            else:
+                grad_coeff = 0.0
+
+            # original attractivie-update loop
+            #for d in range(dim):
+            #    grad_d = clip(grad_coeff * (current[d] - other[d]))
+            #
+            #    if densmap_flag:
+            #        grad_d += clip(2 * grad_cor_coeff * (current[d] - other[d]))
+            #
+            #    current[d] += grad_d * alpha
+            #    if move_other:
+            #        other[d] += -grad_d * alpha
+            #
+            # replacement: grad_d vector might be projected onto tangent space
+            if False:
+                delta = current - other # vector[dim]
+                grad_d = clip_array(grad_coeff * delta)
+                if densmap_flag:
+                    grad_d += clip_array(2 * grad_cor_coeff * delta)
+                other_grad = -grad_d.copy()
+            else:
+                if densmap_flag:
+                    for d in range(dim):
+                        gd = clip((grad_coeff + 2*grad_cor_coeff)
+                                  * (current[d]-other[d]))
+                        grad_d[d]     = gd
+                        other_grad[d] = -gd
+                    #if move_other:
+                    #    for d in range(dim):
+                    #        gd = clip((grad_coeff + 2*grad_cor_coeff)
+                    #                  * (current[d]-other[d]))
+                    #        grad_d[d]     = gd
+                    #        other_grad[d] = -gd
+                    #else:
+                    #    for d in range(dim):
+                    #        grad_d[d] = clip((grad_coeff + 2*grad_cor_coeff)
+                    #                         * (current[d]-other[d]))
+                else:
+                    for d in range(dim):
+                        gd = clip(grad_coeff * (current[d]-other[d]))
+                        grad_d[d]     = gd
+                        other_grad[d] = -gd
+                    #if move_other:
+                    #    for d in range(dim):
+                    #        gd = clip(grad_coeff * (current[d]-other[d]))
+                    #        grad_d[d]     = gd
+                    #        other_grad[d] = -gd
+                    #else:
+                    #    for d in range(dim):
+                    #        grad_d[d] = clip(grad_coeff * (current[d]-other[d]))
+
+            apply_grad(j, current, alpha, grad_d,
+                        wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
+
+            if move_other:
+                apply_grad(k, other, alpha, other_grad,
+                            wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
+
+            epoch_of_next_sample[i] += epochs_per_sample[i]
+
+            n_neg_samples = int(
+                (n - epoch_of_next_negative_sample[i]) / epochs_per_negative_sample[i]
+            )
+
+            for p in range(n_neg_samples):
+                k = tau_rand_int(rng_state) % n_vertices
+
+                other = tail_embedding[k]
+
+                dist_squared = rdist(current, other)
+
+                if dist_squared > 0.0:
+                    grad_coeff = 2.0 * gamma * b
+                    grad_coeff /= (0.001 + dist_squared) * (
+                        a * pow(dist_squared, b) + 1
+                    )
+                elif j == k:
+                    continue
+                else:
+                    grad_coeff = 0.0
+
+                if False:
+                    if grad_coeff > 0.0:
+                        grad_d = clip_array(grad_coeff * (current - other))
+                    else:
+                        # [ejk] seems strange
+                        #       Is this "anything to avoid accidental superpositions"?
+                        #       (why not randomly +/-4?)
+                        grad_d = np.full(dim, 4.0)
+                    other_grad = -grad_d.copy()
+                else:
+                    if grad_coeff > 0.0:
+                        for d in range(dim):
+                            gd = clip(grad_coeff * (current[d] - other[d]))
+                            grad_d[d]     = gd
+                            other_grad[d] = -gd
+                        #if move_other:
+                        #    for d in range(dim):
+                        #        gd = clip(grad_coeff * (current[d] - other[d]))
+                        #        grad_d[d]     = gd
+                        #        other_grad[d] = -gd
+                        #else:
+                        #    for d in range(dim):
+                        #        grad_d[d] = clip(grad_coeff * (current[d] - other[d]))
+                    else:
+                        for d in range(dim):
+                            grad_d[d]     = 4.0
+                            other_grad[d] = -4.0
+                        #if move_other:
+                        #    for d in range(dim):
+                        #        grad_d[d]     = 4.0
+                        #        other_grad[d] = -4.0
+                        #else:
+                        #    for d in range(dim):
+                        #        grad_d[d]     = 4.0
+
+                apply_grad(j, current, alpha, grad_d,
+                            wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
+
+                # following is needed for correctness if tail==head
+                if move_other:
+                    apply_grad(k, other, alpha, other_grad,
+                                wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
+
+            epoch_of_next_negative_sample[i] += (
+                n_neg_samples * epochs_per_negative_sample[i]
+            )
+        # END if epoch_of_next_sample[i] <= n:
+    # END for i in numba.prange(epochs_per_sample.shape[0]):
 
 def _optimize_layout_euclidean_single_epoch(
     head_embedding,
@@ -225,7 +734,28 @@ def _optimize_layout_euclidean_single_epoch(
     assert head_embedding.shape == tail_embedding.shape  # nice for constraints
     assert np.all(head_embedding == tail_embedding)
 
+    _doclip = wrap_idx_grad is not None or wrap_grad is not None
+
+    #useapply_grad = 0 # use apply_grad
+    #useapply_grad = 1 # v1 (longhand)
+    useapply_grad = 2 # reduce # of conditionals... v2
+    # 0:  .149, .780, .056 
+    # 1:  .144, .735, .052
+    # 2:  .151, .731, .051
+    # inline always:    .147 .750 .053
+
+
+    # fast, but does NOT support parallel
+    # XXX TODO allocate tmp vector of size num_threads(), call avail in all 3 numba thread backends.
+    grad_d     = np.empty(dim, dtype=head_embedding.dtype)
+    other_grad = np.empty(dim, dtype=head_embedding.dtype)
     for i in numba.prange(epochs_per_sample.shape[0]):
+        # much slower, but probably ok for parallel
+        #grad_d     = np.empty(dim, dtype=head_embedding.dtype)
+        #other_grad = np.empty(dim, dtype=head_embedding.dtype)
+        #
+        # TODO: XXX figure out how to do FAST local variables
+        #
         if epoch_of_next_sample[i] <= n:
             j = head[i]
             k = tail[i]
@@ -236,6 +766,9 @@ def _optimize_layout_euclidean_single_epoch(
             dist_squared = rdist(current, other)
 
             if densmap_flag:
+                #grad_cor_coeff(dist_squared, a,b,
+                #               dens_phi_sum, dens_re_sum, dens_re_cov, dens_re_std,
+                #               dens_re_mean, dens_lambda, dens_R, dens_mu, dens_mu_tot)
                 # Note that densmap could, if you wish, be viewed as a
                 # "constraint" in that it's a "gradient modification function"
                 phi = 1.0 / (1.0 + a * pow(dist_squared, b))
@@ -289,22 +822,106 @@ def _optimize_layout_euclidean_single_epoch(
             #        other[d] += -grad_d * alpha
             #
             # replacement: grad_d vector might be projected onto tangent space
-            delta = current - other # vector[dim]
-            grad_d = clip_array(grad_coeff * delta)
+            #delta = current - other # vector[dim]
+            #grad_d = clip_array(grad_coeff * delta)
+            #if densmap_flag:
+            #    grad_d += clip_array(2 * grad_cor_coeff * delta)
             if densmap_flag:
-                grad_d += clip_array(2 * grad_cor_coeff * delta)
+                for d in range(dim):
+                    delta = current[d] - other[d]
+                    #grad_d[d] = clip(grad_coeff * delta)
+                    #grad_d[d] += clip(2.0 * grad_cor_coeff * delta)
+                    grad_d[d] = clip((grad_coeff + 2*grad_cor_coeff)
+                                     * (current[d]-other[d]))
+                    other_grad[d] = -grad_d[d]
+            else:
+                for d in range(dim):
+                    grad_d[d] = clip(grad_coeff * current[d] - other[d])
+                    other_grad[d] = -grad_d[d]
+                #if move_other:
+                #    other_grad[d] = -grad_d[d]
             # simplification (a little non-equivalent)
             # TODO: verify shape of grad_cor_coeff and do only a single clip ...
 
 
-            current_grad = grad_d.copy()
-            _apply_grad(j, current, alpha, current_grad,
-                        wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
-
-            if move_other:
-                other_grad = -grad_d
-                _apply_grad(k, other, alpha, other_grad,
+            #if move_other:
+            #    other_grad = -grad_d.copy()
+            #current_grad = grad_d
+            #print(current.dtype, grad_d.dtype, type(alpha))
+            if useapply_grad==0: #opt & applygrad:
+                apply_grad(j, current, np.float32(alpha), grad_d,
                             wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
+                if useapply_grad: #opt & applygrad:
+                    apply_grad(k, other, alpha, other_grad,
+                                wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
+            elif useapply_grad==1:
+                if wrap_idx_grad is not None:
+                    wrap_idx_grad(j, current, grad_d)
+                if wrap_grad is not None:
+                    wrap_grad(current, grad_d)
+                #if _doclip:
+                #    grad_d = clip_array(grad_d)
+                #current += alpha * grad_d
+                for d in range(dim):
+                    #current[d] += alpha * clip(grad_d[d])
+                    current[d] += alpha * grad_d[d]
+                if wrap_idx_pt is not None:
+                    wrap_idx_pt(j, current)
+                if wrap_pt is not None:
+                    wrap_pt(current)
+
+                if move_other:
+                    if wrap_idx_grad is not None:
+                        wrap_idx_grad(k, other, other_grad)
+                    if wrap_grad is not None:
+                        wrap_grad(other, other_grad)
+                    #if _doclip:
+                    #    other_grad = clip_array(other_grad)
+                    #other += alpha * other_grad
+                    for d in range(dim):
+                        #other[d] += alpha * clip(other_grad[d])
+                        other[d] += alpha * other_grad[d]
+                    if wrap_idx_pt is not None:
+                        wrap_idx_pt(k, other)
+                    if wrap_pt is not None:
+                        wrap_pt(other)
+            else:
+                if move_other:
+                    if wrap_idx_grad is not None:
+                        wrap_idx_grad(j, current, grad_d)
+                        wrap_idx_grad(k, other, other_grad)
+                    if wrap_grad is not None:
+                        wrap_grad(current, grad_d)
+                        wrap_grad(other, other_grad)
+                    #if _doclip:
+                    #    grad_d = clip_array(grad_d)
+                    #    other_grad = clip_array(other_grad)
+                    #current += alpha * grad_d
+                    for d in range(dim):
+                        #current[d] += alpha * clip(grad_d[d])
+                        current[d] += alpha * grad_d[d]
+                        other[d] += alpha * other_grad[d]
+                    if wrap_idx_pt is not None:
+                        wrap_idx_pt(j, current)
+                        wrap_idx_pt(k, other)
+                    if wrap_pt is not None:
+                        wrap_pt(current)
+                        wrap_pt(other)
+                else:
+                    if wrap_idx_grad is not None:
+                        wrap_idx_grad(j, current, grad_d)
+                    if wrap_grad is not None:
+                        wrap_grad(current, grad_d)
+                    #if _doclip:
+                    #    grad_d = clip_array(grad_d)
+                    #current += alpha * grad_d
+                    for d in range(dim):
+                        #current[d] += alpha * clip(grad_d[d])
+                        current[d] += alpha * grad_d[d]
+                    if wrap_idx_pt is not None:
+                        wrap_idx_pt(j, current)
+                    if wrap_pt is not None:
+                        wrap_pt(current)
 
             epoch_of_next_sample[i] += epochs_per_sample[i]
 
@@ -329,23 +946,382 @@ def _optimize_layout_euclidean_single_epoch(
                 else:
                     grad_coeff = 0.0
 
-                if grad_coeff > 0.0:
-                    grad_d = clip_array(grad_coeff * (current - other))
-                else:
-                    # [ejk] seems strange
-                    #       Is this "anything to avoid accidental superpositions"?
-                    #       (why not randomly +/-4?)
-                    grad_d = np.full(dim, 4.0)
+                #if grad_coeff > 0.0:
+                #    grad_d = clip_array(grad_coeff * (current - other))
+                #else:
+                #    # [ejk] seems strange
+                #    #       Is this "anything to avoid accidental superpositions"?
+                #    #       (why not randomly +/-4?)
+                #    grad_d = np.full(dim, 4.0)
+                for d in range(dim):
+                    grad_d[d] = clip(grad_coeff * (current[d] - other[d])) if grad_coeff>0.0 else 4.0
+                    other_grad[d] = -grad_d[d]
+                    #if move_other:
+                    #    other_grad[d] = - grad_d[d]
 
-                current_grad = grad_d.copy()
-                _apply_grad(j, current, alpha, current_grad,
-                            wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
-
-                # following is needed for correctness if tail==head
-                if move_other:
-                    other_grad = -grad_d
-                    _apply_grad(k, other, alpha, other_grad,
+                #if move_other:
+                #    other_grad = -grad_d.copy()
+                #current_grad = grad_d
+                if useapply_grad==0:
+                    apply_grad(j, current, alpha, grad_d,
                                 wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
+                    if move_other:
+                        apply_grad(k, other, alpha, other_grad,
+                                    wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
+                elif useapply_grad==1:
+                    if wrap_idx_grad is not None:
+                        wrap_idx_grad(j, current, grad_d)
+                    if wrap_grad is not None:
+                        wrap_grad(current, grad_d)
+                    #if _doclip:
+                    #    grad_d = clip_array(grad_d)
+                    #current += alpha * grad_d
+                    for d in range(dim):
+                        current[d] += alpha * grad_d[d]
+                    if wrap_idx_pt is not None:
+                        wrap_idx_pt(j, current)
+                    if wrap_pt is not None:
+                        wrap_pt(current)
+
+                    # following is needed for correctness if tail==head
+                    #   upstream code does NOT do this
+                    if move_other:
+                        if wrap_idx_grad is not None:
+                            wrap_idx_grad(k, other, other_grad)
+                        if wrap_grad is not None:
+                            wrap_grad(other, other_grad)
+                        #if _doclip:
+                        #   other_grad = clip_array(other_grad)
+                        #other += alpha * other_grad
+                        for d in range(dim):
+                            other[d] += alpha * other_grad[d]
+                        if wrap_idx_pt is not None:
+                            wrap_idx_pt(k, other)
+                        if wrap_pt is not None:
+                            wrap_pt(other)
+
+                else:
+                    if move_other:
+                        if wrap_idx_grad is not None:
+                            wrap_idx_grad(j, current, grad_d)
+                            wrap_idx_grad(k, other, other_grad)
+                        if wrap_grad is not None:
+                            wrap_grad(current, grad_d)
+                            wrap_grad(other, other_grad)
+                        #if _doclip: # but NEVER call clip_array (slow!)
+                        #    grad_d = clip_array(grad_d)
+                        #    other_grad = clip_array(other_grad)
+                        #current += alpha * grad_d
+                        for d in range(dim):
+                            current[d] += alpha * grad_d[d]
+                            other[d] += alpha * other_grad[d]
+                        if wrap_idx_pt is not None:
+                            wrap_idx_pt(j, current)
+                            wrap_idx_pt(k, other)
+                        if wrap_pt is not None:
+                            wrap_pt(current)
+                            wrap_pt(other)
+                    else:
+                        if wrap_idx_grad is not None:
+                            wrap_idx_grad(j, current, grad_d)
+                        if wrap_grad is not None:
+                            wrap_grad(current, grad_d)
+                        #if _doclip:
+                        #    grad_d = clip_array(grad_d)
+                        #current += alpha * grad_d
+                        for d in range(dim):
+                            current[d] += alpha * grad_d[d]
+                        if wrap_idx_pt is not None:
+                            wrap_idx_pt(j, current)
+                        if wrap_pt is not None:
+                            wrap_pt(current)
+
+            epoch_of_next_negative_sample[i] += (
+                n_neg_samples * epochs_per_negative_sample[i]
+            )
+        # END if epoch_of_next_sample[i] <= n:
+    # END for i in numba.prange(epochs_per_sample.shape[0]):
+
+def _optimize_layout_euclidean_single_epoch2(
+    head_embedding,
+    tail_embedding,
+    head,
+    tail,
+    n_vertices,
+    epochs_per_sample,
+    a,
+    b,
+    rng_state,
+    gamma,
+    dim,
+    move_other,
+    alpha,
+    epochs_per_negative_sample,
+    epoch_of_next_negative_sample,
+    epoch_of_next_sample,
+    n,              # epoch
+    wrap_idx_pt,    # NEW: constraint fn(idx,pt) or None
+    wrap_idx_grad,  #      constraint fn(idx,pt,grad) or None
+    wrap_pt,        #      constraint fn(pt) or None
+    wrap_grad,      #      constraint fn(pt,grad) or None
+    densmap_flag,
+    dens_phi_sum,
+    dens_re_sum,
+    dens_re_cov,
+    dens_re_std,
+    dens_re_mean,
+    dens_lambda,
+    dens_R,
+    dens_mu,
+    dens_mu_tot,
+):
+    #if constraints is None:
+    #    constraints = {}
+
+    # SUBJECT TO CHANGE ... should this be a user responsibility?
+    #                       or handled in some other place?
+    # WHEN CONSTRAINTS WERE FULLY-FLESHED-OUT PROJECTION OBJECTS ...
+    #if 'grad' in constraints:
+    #    # grad constraints include hard-pinning.  This needs points to be "OK"
+    #    # before zeroing the gradients in tangent_space.   Soft force constraints
+    #    # probably have these as no-ops.
+    #    for constraint in constraints['grad']:
+    #        # UNTESTED
+    #        constraint.project_rows_onto_constraint(head_embedding)
+    #        constraint.project_rows_onto_constraint(tail_embedding)
+    #        # once constrained, iteration can just do project_onto_tangent_space
+    #        #                   to zero the required gradients.
+
+    #if len(constrain_idx_pt):
+    #print("_optimize_layout_euclidean_single_epoch")
+    #print("head,tail shapes",head_embedding.shape, tail_embedding.shape)
+    #for j in [13,14]:
+    #    print("init head_embeding[",j,"]", head_embedding[j])
+    #    print("init tail_embeding[",j,"]", tail_embedding[j])
+    #if wrap_idx_pt is not None: print("wrap_idx_pt",wrap_idx_pt)
+    #if wrap_idx_grad is not None: print("wrap_idx_grad",wrap_idx_grad)
+    #if wrap_pt is not None: print("wrap_pt",wrap_pt)
+    #if wrap_grad is not None: print("wrap_grad",wrap_grad)
+
+    # catch simplifying assumptions
+    #   TODO: Work through constraint correctness when these fail!
+    assert head_embedding.shape == tail_embedding.shape  # nice for constraints
+    assert np.all(head_embedding == tail_embedding)
+
+    _doclip = wrap_idx_grad is not None or wrap_grad is not None
+    # Note: this COULD be used to clip grads AFTER grad-constraint functions
+
+    # "usapply_grad==2" of the _dev version
+
+    #grad_d     = np.empty(dim, dtype=head_embedding.dtype) #one per thread!
+    #other_grad = np.empty(dim, dtype=head_embedding.dtype)
+    for i in numba.prange(epochs_per_sample.shape[0]):
+        grad_d     = np.empty(dim, dtype=head_embedding.dtype) #one per thread!
+        other_grad = np.empty(dim, dtype=head_embedding.dtype)
+        # above is MUCH slower
+
+        if epoch_of_next_sample[i] <= n:
+            j = head[i]
+            k = tail[i]
+
+            current = head_embedding[j]
+            other = tail_embedding[k]
+
+            dist_squared = rdist(current, other)
+
+            if densmap_flag:
+                #grad_cor_coeff(dist_squared, a,b,
+                #               dens_phi_sum, dens_re_sum, dens_re_cov, dens_re_std,
+                #               dens_re_mean, dens_lambda, dens_R, dens_mu, dens_mu_tot)
+                # Note that densmap could, if you wish, be viewed as a
+                # "constraint" in that it's a "gradient modification function"
+                phi = 1.0 / (1.0 + a * pow(dist_squared, b))
+                dphi_term = (
+                    a * b * pow(dist_squared, b - 1) / (1.0 + a * pow(dist_squared, b))
+                )
+
+                q_jk = phi / dens_phi_sum[k]
+                q_kj = phi / dens_phi_sum[j]
+
+                drk = q_jk * (
+                    (1.0 - b * (1 - phi)) / np.exp(dens_re_sum[k]) + dphi_term
+                )
+                drj = q_kj * (
+                    (1.0 - b * (1 - phi)) / np.exp(dens_re_sum[j]) + dphi_term
+                )
+
+                re_std_sq = dens_re_std * dens_re_std
+                weight_k = (
+                    dens_R[k]
+                    - dens_re_cov * (dens_re_sum[k] - dens_re_mean) / re_std_sq
+                )
+                weight_j = (
+                    dens_R[j]
+                    - dens_re_cov * (dens_re_sum[j] - dens_re_mean) / re_std_sq
+                )
+
+                grad_cor_coeff = (
+                    dens_lambda
+                    * dens_mu_tot
+                    * (weight_k * drk + weight_j * drj)
+                    / (dens_mu[i] * dens_re_std)
+                    / n_vertices
+                )
+
+            if dist_squared > 0.0:
+                grad_coeff = -2.0 * a * b * pow(dist_squared, b - 1.0)
+                grad_coeff /= a * pow(dist_squared, b) + 1.0
+            else:
+                grad_coeff = 0.0
+
+            # original attractivie-update loop
+            #for d in range(dim):
+            #    grad_d = clip(grad_coeff * (current[d] - other[d]))
+            #
+            #    if densmap_flag:
+            #        grad_d += clip(2 * grad_cor_coeff * (current[d] - other[d]))
+            #
+            #    current[d] += grad_d * alpha
+            #    if move_other:
+            #        other[d] += -grad_d * alpha
+            #
+            # replacement: grad_d vector might be projected onto tangent space
+            #delta = current - other # vector[dim]
+            #grad_d = clip_array(grad_coeff * delta)
+            #if densmap_flag:
+            #    grad_d += clip_array(2 * grad_cor_coeff * delta)
+            if densmap_flag:
+                for d in range(dim):
+                    delta = current[d] - other[d]
+                    #grad_d[d] = clip(grad_coeff * delta)
+                    #grad_d[d] += clip(2.0 * grad_cor_coeff * delta)
+                    grad_d[d] = clip((grad_coeff + 2*grad_cor_coeff)
+                                     * (current[d]-other[d]))
+                    other_grad[d] = -grad_d[d]
+            else:
+                for d in range(dim):
+                    grad_d[d] = clip(grad_coeff * current[d] - other[d])
+                    other_grad[d] = -grad_d[d]
+                #if move_other:
+                #    other_grad[d] = -grad_d[d]
+            # simplification (a little non-equivalent)
+            # TODO: verify shape of grad_cor_coeff and do only a single clip ...
+
+
+            #if move_other:
+            #    other_grad = -grad_d.copy()
+            #current_grad = grad_d
+            #print(current.dtype, grad_d.dtype, type(alpha))
+            if move_other:
+                if wrap_idx_grad is not None:
+                    wrap_idx_grad(j, current, grad_d)
+                    wrap_idx_grad(k, other, other_grad)
+                if wrap_grad is not None:
+                    wrap_grad(current, grad_d)
+                    wrap_grad(other, other_grad)
+                #if _doclip:
+                #    grad_d = clip_array(grad_d)
+                #    other_grad = clip_array(other_grad)
+                #current += alpha * grad_d
+                for d in range(dim):
+                    #current[d] += alpha * clip(grad_d[d])
+                    current[d] += alpha * grad_d[d]
+                    other[d] += alpha * other_grad[d]
+                if wrap_idx_pt is not None:
+                    wrap_idx_pt(j, current)
+                    wrap_idx_pt(k, other)
+                if wrap_pt is not None:
+                    wrap_pt(current)
+                    wrap_pt(other)
+            else:
+                if wrap_idx_grad is not None:
+                    wrap_idx_grad(j, current, grad_d)
+                if wrap_grad is not None:
+                    wrap_grad(current, grad_d)
+                #if _doclip:
+                #    grad_d = clip_array(grad_d)
+                #current += alpha * grad_d
+                for d in range(dim):
+                    #current[d] += alpha * clip(grad_d[d])
+                    current[d] += alpha * grad_d[d]
+                if wrap_idx_pt is not None:
+                    wrap_idx_pt(j, current)
+                if wrap_pt is not None:
+                    wrap_pt(current)
+
+            epoch_of_next_sample[i] += epochs_per_sample[i]
+
+            n_neg_samples = int(
+                (n - epoch_of_next_negative_sample[i]) / epochs_per_negative_sample[i]
+            )
+
+            for p in range(n_neg_samples):
+                k = tau_rand_int(rng_state) % n_vertices
+
+                other = tail_embedding[k]
+
+                dist_squared = rdist(current, other)
+
+                if dist_squared > 0.0:
+                    grad_coeff = 2.0 * gamma * b
+                    grad_coeff /= (0.001 + dist_squared) * (
+                        a * pow(dist_squared, b) + 1
+                    )
+                elif j == k:
+                    continue
+                else:
+                    grad_coeff = 0.0
+
+                #if grad_coeff > 0.0:
+                #    grad_d = clip_array(grad_coeff * (current - other))
+                #else:
+                #    # [ejk] seems strange
+                #    #       Is this "anything to avoid accidental superpositions"?
+                #    #       (why not randomly +/-4?)
+                #    grad_d = np.full(dim, 4.0)
+                for d in range(dim):
+                    grad_d[d] = clip(grad_coeff * (current[d] - other[d])) if grad_coeff>0.0 else 4.0
+                    other_grad[d] = -grad_d[d]
+                    #if move_other:
+                    #    other_grad[d] = - grad_d[d]
+
+                #if move_other:
+                #    other_grad = -grad_d.copy()
+                #current_grad = grad_d
+                if move_other:
+                    if wrap_idx_grad is not None:
+                        wrap_idx_grad(j, current, grad_d)
+                        wrap_idx_grad(k, other, other_grad)
+                    if wrap_grad is not None:
+                        wrap_grad(current, grad_d)
+                        wrap_grad(other, other_grad)
+                    #if _doclip: # but NEVER call clip_array (slow!)
+                    #    grad_d = clip_array(grad_d)
+                    #    other_grad = clip_array(other_grad)
+                    #current += alpha * grad_d
+                    for d in range(dim):
+                        current[d] += alpha * grad_d[d]
+                        other[d] += alpha * other_grad[d]
+                    if wrap_idx_pt is not None:
+                        wrap_idx_pt(j, current)
+                        wrap_idx_pt(k, other)
+                    if wrap_pt is not None:
+                        wrap_pt(current)
+                        wrap_pt(other)
+                else:
+                    if wrap_idx_grad is not None:
+                        wrap_idx_grad(j, current, grad_d)
+                    if wrap_grad is not None:
+                        wrap_grad(current, grad_d)
+                    #if _doclip:
+                    #    grad_d = clip_array(grad_d)
+                    #current += alpha * grad_d
+                    for d in range(dim):
+                        current[d] += alpha * grad_d[d]
+                    if wrap_idx_pt is not None:
+                        wrap_idx_pt(j, current)
+                    if wrap_pt is not None:
+                        wrap_pt(current)
 
             epoch_of_next_negative_sample[i] += (
                 n_neg_samples * epochs_per_negative_sample[i]
@@ -354,11 +1330,12 @@ def _optimize_layout_euclidean_single_epoch(
     # END for i in numba.prange(epochs_per_sample.shape[0]):
 
 
-_opt_euclidean = numba.njit(_optimize_layout_euclidean_single_epoch,
+opt_euclidean = numba.njit(_optimize_layout_euclidean_single_epoch,
                             fastmath=True, parallel=False,)
-_opt_euclidean_para = numba.njit(_optimize_layout_euclidean_single_epoch,
+opt_euclidean_para = numba.njit(_optimize_layout_euclidean_single_epoch,
                                  fastmath=True, parallel=True,)
 
+@numba.njit()
 def _optimize_layout_euclidean_densmap_epoch_init(
     head_embedding,
     tail_embedding,
@@ -649,8 +1626,8 @@ def optimize_layout_euclidean(
     #    parallel=parallel,  # <--- Can this be re-enabled?
     #)
     #optimize_fn = _opt_euclidean
-    optimize_fn = (_opt_euclidean_para if parallel
-                   else _opt_euclidean)
+    optimize_fn = (opt_euclidean_para if parallel
+                   else opt_euclidean)
 
     if densmap:
         dens_init_fn = numba.njit(
@@ -679,6 +1656,9 @@ def optimize_layout_euclidean(
     #       some best fit of an unconstrained UMAP to the constraints,
     #       followed by manually adjusting constrained points so
     #       they initially obey constraints.
+    dens_re_std = 0
+    dens_re_mean = 0
+    dens_re_cov = 0
     for n in range(n_epochs):
 
         densmap_flag = (
@@ -702,10 +1682,6 @@ def optimize_layout_euclidean(
             dens_re_std = np.sqrt(np.var(dens_re_sum) + dens_var_shift)
             dens_re_mean = np.mean(dens_re_sum)
             dens_re_cov = np.dot(dens_re_sum, dens_R) / (n_vertices - 1)
-        else:
-            dens_re_std = 0
-            dens_re_mean = 0
-            dens_re_cov = 0
 
         optimize_fn(
             head_embedding,
@@ -759,170 +1735,6 @@ def optimize_layout_euclidean(
         outconstrain_final_pt(head_embedding)
         #if move_other: # ... probably not
         #    outconstrain_final_pt(tail_embedding)
-
-    return head_embedding
-
-
-@numba.njit(fastmath=True)
-def optimize_layout_generic(
-    head_embedding,
-    tail_embedding,
-    head,
-    tail,
-    n_epochs,
-    n_vertices,
-    epochs_per_sample,
-    a,
-    b,
-    rng_state,
-    gamma=1.0,
-    initial_alpha=1.0,
-    negative_sample_rate=5.0,
-    output_metric=dist.euclidean,
-    output_metric_kwds=(),
-    verbose=False,
-    move_other=False,
-):
-    """Improve an embedding using stochastic gradient descent to minimize the
-    fuzzy set cross entropy between the 1-skeletons of the high dimensional
-    and low dimensional fuzzy simplicial sets. In practice this is done by
-    sampling edges based on their membership strength (with the (1-p) terms
-    coming from negative sampling similar to word2vec).
-
-    Parameters
-    ----------
-    head_embedding: array of shape (n_samples, n_components)
-        The initial embedding to be improved by SGD.
-
-    tail_embedding: array of shape (source_samples, n_components)
-        The reference embedding of embedded points. If not embedding new
-        previously unseen points with respect to an existing embedding this
-        is simply the head_embedding (again); otherwise it provides the
-        existing embedding to embed with respect to.
-
-    head: array of shape (n_1_simplices)
-        The indices of the heads of 1-simplices with non-zero membership.
-
-    tail: array of shape (n_1_simplices)
-        The indices of the tails of 1-simplices with non-zero membership.
-
-    weight: array of shape (n_1_simplices)
-        The membership weights of the 1-simplices.
-
-    n_epochs: int
-        The number of training epochs to use in optimization.
-
-    n_vertices: int
-        The number of vertices (0-simplices) in the dataset.
-
-    epochs_per_sample: array of shape (n_1_simplices)
-        A float value of the number of epochs per 1-simplex. 1-simplices with
-        weaker membership strength will have more epochs between being sampled.
-
-    a: float
-        Parameter of differentiable approximation of right adjoint functor
-
-    b: float
-        Parameter of differentiable approximation of right adjoint functor
-
-    rng_state: array of int64, shape (3,)
-        The internal state of the rng
-
-    gamma: float (optional, default 1.0)
-        Weight to apply to negative samples.
-
-    initial_alpha: float (optional, default 1.0)
-        Initial learning rate for the SGD.
-
-    negative_sample_rate: int (optional, default 5)
-        Number of negative samples to use per positive sample.
-
-    verbose: bool (optional, default False)
-        Whether to report information on the current progress of the algorithm.
-
-    move_other: bool (optional, default False)
-        Whether to adjust tail_embedding alongside head_embedding
-
-    Returns
-    -------
-    embedding: array of shape (n_samples, n_components)
-        The optimized embedding.
-    """
-
-    dim = head_embedding.shape[1]
-    alpha = initial_alpha
-
-    epochs_per_negative_sample = epochs_per_sample / negative_sample_rate
-    epoch_of_next_negative_sample = epochs_per_negative_sample.copy()
-    epoch_of_next_sample = epochs_per_sample.copy()
-
-    for n in range(n_epochs):
-        for i in range(epochs_per_sample.shape[0]):
-            if epoch_of_next_sample[i] <= n:
-                j = head[i]
-                k = tail[i]
-
-                current = head_embedding[j]
-                other = tail_embedding[k]
-
-                dist_output, grad_dist_output = output_metric(
-                    current, other, *output_metric_kwds
-                )
-                _, rev_grad_dist_output = output_metric(
-                    other, current, *output_metric_kwds
-                )
-
-                if dist_output > 0.0:
-                    w_l = pow((1 + a * pow(dist_output, 2 * b)), -1)
-                else:
-                    w_l = 1.0
-                grad_coeff = 2 * b * (w_l - 1) / (dist_output + 1e-6)
-
-                for d in range(dim):
-                    grad_d = clip(grad_coeff * grad_dist_output[d])
-
-                    current[d] += grad_d * alpha
-                    if move_other:
-                        grad_d = clip(grad_coeff * rev_grad_dist_output[d])
-                        other[d] += grad_d * alpha
-
-                epoch_of_next_sample[i] += epochs_per_sample[i]
-
-                n_neg_samples = int(
-                    (n - epoch_of_next_negative_sample[i])
-                    / epochs_per_negative_sample[i]
-                )
-
-                for p in range(n_neg_samples):
-                    k = tau_rand_int(rng_state) % n_vertices
-
-                    other = tail_embedding[k]
-
-                    dist_output, grad_dist_output = output_metric(
-                        current, other, *output_metric_kwds
-                    )
-
-                    if dist_output > 0.0:
-                        w_l = pow((1 + a * pow(dist_output, 2 * b)), -1)
-                    elif j == k:
-                        continue
-                    else:
-                        w_l = 1.0
-
-                    grad_coeff = gamma * 2 * b * w_l / (dist_output + 1e-6)
-
-                    for d in range(dim):
-                        grad_d = clip(grad_coeff * grad_dist_output[d])
-                        current[d] += grad_d * alpha
-
-                epoch_of_next_negative_sample[i] += (
-                    n_neg_samples * epochs_per_negative_sample[i]
-                )
-
-        alpha = initial_alpha * (1.0 - (float(n) / float(n_epochs)))
-
-        if verbose and n % int(n_epochs / 10) == 0:
-            print("\tcompleted ", n, " / ", n_epochs, "epochs")
 
     return head_embedding
 
@@ -1324,4 +2136,168 @@ def optimize_layout_aligned_euclidean(
             print("\tcompleted ", n, " / ", n_epochs, "epochs")
 
     return head_embeddings
-#
+
+@numba.njit(fastmath=True)
+def optimize_layout_generic(
+    head_embedding,
+    tail_embedding,
+    head,
+    tail,
+    n_epochs,
+    n_vertices,
+    epochs_per_sample,
+    a,
+    b,
+    rng_state,
+    gamma=1.0,
+    initial_alpha=1.0,
+    negative_sample_rate=5.0,
+    output_metric=dist.euclidean,
+    output_metric_kwds=(),
+    verbose=False,
+    move_other=False,
+):
+    """Improve an embedding using stochastic gradient descent to minimize the
+    fuzzy set cross entropy between the 1-skeletons of the high dimensional
+    and low dimensional fuzzy simplicial sets. In practice this is done by
+    sampling edges based on their membership strength (with the (1-p) terms
+    coming from negative sampling similar to word2vec).
+
+    Parameters
+    ----------
+    head_embedding: array of shape (n_samples, n_components)
+        The initial embedding to be improved by SGD.
+
+    tail_embedding: array of shape (source_samples, n_components)
+        The reference embedding of embedded points. If not embedding new
+        previously unseen points with respect to an existing embedding this
+        is simply the head_embedding (again); otherwise it provides the
+        existing embedding to embed with respect to.
+
+    head: array of shape (n_1_simplices)
+        The indices of the heads of 1-simplices with non-zero membership.
+
+    tail: array of shape (n_1_simplices)
+        The indices of the tails of 1-simplices with non-zero membership.
+
+    weight: array of shape (n_1_simplices)
+        The membership weights of the 1-simplices.
+
+    n_epochs: int
+        The number of training epochs to use in optimization.
+
+    n_vertices: int
+        The number of vertices (0-simplices) in the dataset.
+
+    epochs_per_sample: array of shape (n_1_simplices)
+        A float value of the number of epochs per 1-simplex. 1-simplices with
+        weaker membership strength will have more epochs between being sampled.
+
+    a: float
+        Parameter of differentiable approximation of right adjoint functor
+
+    b: float
+        Parameter of differentiable approximation of right adjoint functor
+
+    rng_state: array of int64, shape (3,)
+        The internal state of the rng
+
+    gamma: float (optional, default 1.0)
+        Weight to apply to negative samples.
+
+    initial_alpha: float (optional, default 1.0)
+        Initial learning rate for the SGD.
+
+    negative_sample_rate: int (optional, default 5)
+        Number of negative samples to use per positive sample.
+
+    verbose: bool (optional, default False)
+        Whether to report information on the current progress of the algorithm.
+
+    move_other: bool (optional, default False)
+        Whether to adjust tail_embedding alongside head_embedding
+
+    Returns
+    -------
+    embedding: array of shape (n_samples, n_components)
+        The optimized embedding.
+    """
+
+    dim = head_embedding.shape[1]
+    alpha = initial_alpha
+
+    epochs_per_negative_sample = epochs_per_sample / negative_sample_rate
+    epoch_of_next_negative_sample = epochs_per_negative_sample.copy()
+    epoch_of_next_sample = epochs_per_sample.copy()
+
+    for n in range(n_epochs):
+        for i in range(epochs_per_sample.shape[0]):
+            if epoch_of_next_sample[i] <= n:
+                j = head[i]
+                k = tail[i]
+
+                current = head_embedding[j]
+                other = tail_embedding[k]
+
+                dist_output, grad_dist_output = output_metric(
+                    current, other, *output_metric_kwds
+                )
+                _, rev_grad_dist_output = output_metric(
+                    other, current, *output_metric_kwds
+                )
+
+                if dist_output > 0.0:
+                    w_l = pow((1 + a * pow(dist_output, 2 * b)), -1)
+                else:
+                    w_l = 1.0
+                grad_coeff = 2 * b * (w_l - 1) / (dist_output + 1e-6)
+
+                for d in range(dim):
+                    grad_d = clip(grad_coeff * grad_dist_output[d])
+
+                    current[d] += grad_d * alpha
+                    if move_other:
+                        grad_d = clip(grad_coeff * rev_grad_dist_output[d])
+                        other[d] += grad_d * alpha
+
+                epoch_of_next_sample[i] += epochs_per_sample[i]
+
+                n_neg_samples = int(
+                    (n - epoch_of_next_negative_sample[i])
+                    / epochs_per_negative_sample[i]
+                )
+
+                for p in range(n_neg_samples):
+                    k = tau_rand_int(rng_state) % n_vertices
+
+                    other = tail_embedding[k]
+
+                    dist_output, grad_dist_output = output_metric(
+                        current, other, *output_metric_kwds
+                    )
+
+                    if dist_output > 0.0:
+                        w_l = pow((1 + a * pow(dist_output, 2 * b)), -1)
+                    elif j == k:
+                        continue
+                    else:
+                        w_l = 1.0
+
+                    grad_coeff = gamma * 2 * b * w_l / (dist_output + 1e-6)
+
+                    for d in range(dim):
+                        grad_d = clip(grad_coeff * grad_dist_output[d])
+                        current[d] += grad_d * alpha
+
+                epoch_of_next_negative_sample[i] += (
+                    n_neg_samples * epochs_per_negative_sample[i]
+                )
+
+        alpha = initial_alpha * (1.0 - (float(n) / float(n_epochs)))
+
+        if verbose and n % int(n_epochs / 10) == 0:
+            print("\tcompleted ", n, " / ", n_epochs, "epochs")
+
+    return head_embedding
+
+

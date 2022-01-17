@@ -414,6 +414,7 @@ def compute_membership_strengths(
     else:
         dists = None
 
+    ## numba.prange XXX !!!
     for i in range(n_samples):
         for j in range(n_neighbors):
             if knn_indices[i, j] == -1:
