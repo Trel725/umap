@@ -1196,6 +1196,7 @@ def simplicial_set_embedding(
 
     if euclidean_output:
         # [ejk] optimize_layout_euclidean now "just works" with data_constrain=None
+        #print("simplicial_set_embedding rng_state",rng_state," parallel",parallel)
         embedding = optimize_layout_euclidean(
             embedding,
             embedding,
@@ -2411,8 +2412,8 @@ class UMAP(BaseEstimator):
             X.sort_indices()
 
         random_state = check_random_state(self.random_state)
-        #print("self.random_state=",self.random_state)
-        #print("random_state=",random_state)
+        #print("fit self.random_state=",self.random_state)
+        #print("fit random_state=",random_state)
 
         if self.verbose:
             print("Construct fuzzy simplicial set")
@@ -2785,6 +2786,11 @@ class UMAP(BaseEstimator):
                         if np.any(data_constrain[i,] == 0.0):
                             print("sample",i,"pins",data_constrain[i,],"init",init[i,])
 
+        # if [self.?]random_state is None, this is known to create an np.random.RandomState,
+        my_random_state = check_random_state(random_state)
+        #   which *is* thread-safe, and set parallel=True for the gradient
+        #   descent lo-D embedding optimization.
+
         if self.output_constrain is not None:
             # _validate_parameters ensures it must be a dict
             print("output_constrain keys", self.output_constrain.keys())
@@ -2800,7 +2806,7 @@ class UMAP(BaseEstimator):
             self.negative_sample_rate,
             n_epochs,
             init,
-            random_state,
+            my_random_state,
             self._input_distance_func,
             self._metric_kwds,
             self.densmap,

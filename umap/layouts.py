@@ -48,6 +48,7 @@ def clip_array(arr):
         "result": numba.types.float32,
         "diff": numba.types.float32,
         "dim": numba.types.intp,
+        "d": numba.types.int32,
     },
 )
 def rdist(x, y):
@@ -64,8 +65,8 @@ def rdist(x, y):
     """
     result = 0.0
     dim = x.shape[0]
-    for i in range(dim):
-        diff = x[i] - y[i]
+    for d in range(dim):
+        diff = x[d] - y[d]
         result += diff * diff
 
     return result
@@ -1173,8 +1174,10 @@ def _optimize_layout_euclidean_single_epoch(
                     / (dens_mu[i] * dens_re_std)
                     / n_vertices
                 )
+
                 # Reorganize double-clip of original umap impl to a simpler
-                # densmap update of grad_coeff
+                # densmap update of grad_coeff (result is a bit different, since
+                # only a single 'clip' gets applied)
                 grad_coeff += 2.0*grad_cor_coeff
 
             # original attractivie-update loop
@@ -1218,18 +1221,19 @@ def _optimize_layout_euclidean_single_epoch(
                         other_grad[d] = -grad_d[d]
                     #if move_other:
                     #    other_grad[d] = -grad_d[d]
-            else:
-                # do only a single clip and roll grad_cor_coeff into grad_cor during 'densmap' code
+            #else:
+            #    # do only a single clip and roll grad_cor_coeff into grad_cor during 'densmap' code
+            #    # note: first calculating current-other might be a bit more
+            #    #       tolerant of read-race conditions. (but maybe numba would fuse the loops?)
+            #    for d in range(dim):
+            #        grad_d[d] = clip(grad_coeff * (current[d] - other[d]))
+            #        other_grad[d] = -grad_d[d]
+
+            if move_other:
                 for d in range(dim):
                     grad_d[d] = clip(grad_coeff * (current[d] - other[d]))
                     other_grad[d] = -grad_d[d]
 
-
-            #if move_other:
-            #    other_grad = -grad_d.copy()
-            #current_grad = grad_d
-            #print(current.dtype, grad_d.dtype, type(alpha))
-            if move_other:
                 if wrap_idx_grad is not None:
                     wrap_idx_grad(j, current, grad_d)
                     wrap_idx_grad(k, other, other_grad)
@@ -1251,6 +1255,9 @@ def _optimize_layout_euclidean_single_epoch(
                     wrap_pt(current)
                     wrap_pt(other)
             else:
+                for d in range(dim):
+                    grad_d[d] = clip(grad_coeff * (current[d] - other[d]))
+
                 # even if grad_coeff is 0.0, constraints MIGHT still cause
                 # current to move, or
                 # grad_d to become nonzero
@@ -1469,7 +1476,9 @@ def _optimize_layout_euclidean_single_epoch_para(
     #   but even this has issues in that numba does not expose any mutex
     #   interface from its threading backends (you could use cffi or
     #   ctypes, maybe, to call into C library code explicitly, maybe)
+    #
     #   https://numba.discourse.group/t/how-to-use-locks-in-nopython-mode/221
+    #   https://stackoverflow.com/questions/61372937/avoid-race-condition-in-numba
     #
     # A better variation on manual threading just has each thread accumulate
     # all the 'move_other' gradient info during the main loop,
@@ -1510,6 +1519,12 @@ def _optimize_layout_euclidean_single_epoch_para(
         #
         # On the other hand, "Hog Wild" updates, ignoring races are often quite successful
         # in practice.
+        #
+        # Fix:
+        # j is in range head_embedding.shape[0]; k is in range tail_embedding.shape[0]
+        # (i) accumulate into other_grads of shape == tail_embedding.shape
+        # (ii) sum results of each threads other_grads
+        # (iii) next loop applies move_other gradient
 
         if epoch_of_next_sample[i] <= n:
             j = head[i]
@@ -1849,6 +1864,8 @@ def optimize_layout_euclidean(
         Auxiliary data for densMAP
     move_other: bool (optional, default False)
         Whether to adjust tail_embedding alongside head_embedding
+        umap_.py simplicial_set_embedding always calls with move_other=True,
+        even though our default is move_other=False
     Returns
     -------
     embedding: array of shape (n_samples, n_components)
@@ -2000,8 +2017,8 @@ def optimize_layout_euclidean(
         if outconstrain_epoch_pt is not None: print("outconstrain_epoch_pt",outconstrain_epoch_pt)
         if outconstrain_final_pt is not None: print("outconstrain_final_pt",outconstrain_final_pt)
 
-    #print("parallel",parallel)
-    #print("rng_state",rng_state,type(rng_state))
+    #print("euc parallel",parallel)
+    #print("euc rng_state",rng_state,type(rng_state))
 
     #
     # TODO: fix numba errors with parallel=True
