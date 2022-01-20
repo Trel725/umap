@@ -72,64 +72,66 @@ def rdist(x, y):
 
     return result
 
-# Workaround:
-# compose tuple of jitted fns(idx,pt)
-# This avoid numba 0.53 "experimental" passing functions warnings.
-#
-# When numba 0.53 is required, this hackery is not required
-# ref: https://github.com/numba/numba/issues/3405  and older 2542
-# 
-@numba.njit()
-def _fn_idx_pt_noop(idx,pt):
-    return None
-def _chain_idx_pt(fs, inner=None):
-    """for f(idx,pt) in tuple fs, invoke them in order"""
-    if len(fs) == 0:
-        assert inner is None
-        return _fn_idx_pt_noop
-    head = fs[0]
-    if inner is None:
-        @numba.njit()
-        def wrap(idx,pt):
-            head(idx,pt)
-        return wrap
-    else:
-        @numba.njit()
-        def wrap(idx,pt):
-            inner(idx,pt)
-            head(idx,pt)
-    if len(fs) > 1:
-        tail = fs[1:]
-        return _chain_idx_pt(tail, wrap)
-    else:
-        return wrap
+if False: # 'chaining' multiple constraints is perhaps too complicated
 
-# Now to chain jit fns that don't need an index
-# Ex. numba wrappers for dimlohi_pt(pt, los, his) in constraints.py
-@numba.njit()
-def _fn_pt_noop(pt):
-    return None
-def _chain_pt(fs, inner=None):
-    """for f(idx,pt) in tuple fs, invoke them in order"""
-    if len(fs) == 0:
-        assert inner is None
-        return _fn_pt_noop
-    head = fs[0]
-    if inner is None:
-        @numba.njit()
-        def wrap(pt):
-            head(pt)
-    else:
-        @numba.njit()
-        def wrap(pt):
-            inner(pt)
-            head(pt)
-    if len(fs) > 1:
-        tail = fs[1:]
-        return _chain_pt(tail, wrap)
-    else:
-        return wrap
-#
+    # Workaround:
+    # compose tuple of jitted fns(idx,pt)
+    # This avoid numba 0.53 "experimental" passing functions warnings.
+    #
+    # When numba 0.53 is required, this hackery is not required
+    # ref: https://github.com/numba/numba/issues/3405  and older 2542
+    # 
+    @numba.njit()
+    def _fn_idx_pt_noop(idx,pt):
+        return None
+    def _chain_idx_pt(fs, inner=None):
+        """for f(idx,pt) in tuple fs, invoke them in order"""
+        if len(fs) == 0:
+            assert inner is None
+            return _fn_idx_pt_noop
+        head = fs[0]
+        if inner is None:
+            @numba.njit()
+            def wrap(idx,pt):
+                head(idx,pt)
+            return wrap
+        else:
+            @numba.njit()
+            def wrap(idx,pt):
+                inner(idx,pt)
+                head(idx,pt)
+        if len(fs) > 1:
+            tail = fs[1:]
+            return _chain_idx_pt(tail, wrap)
+        else:
+            return wrap
+
+    # Now to chain jit fns that don't need an index
+    # Ex. numba wrappers for dimlohi_pt(pt, los, his) in constraints.py
+    @numba.njit()
+    def _fn_pt_noop(pt):
+        return None
+    def _chain_pt(fs, inner=None):
+        """for f(idx,pt) in tuple fs, invoke them in order"""
+        if len(fs) == 0:
+            assert inner is None
+            return _fn_pt_noop
+        head = fs[0]
+        if inner is None:
+            @numba.njit()
+            def wrap(pt):
+                head(pt)
+        else:
+            @numba.njit()
+            def wrap(pt):
+                inner(pt)
+                head(pt)
+        if len(fs) > 1:
+            tail = fs[1:]
+            return _chain_pt(tail, wrap)
+        else:
+            return wrap
+    #
 
 #
 # REMOVED apply_grad -- it is MUCH faster when inlined
@@ -169,7 +171,7 @@ def apply_grad(idx, pt, alpha, grad, fn_idx_grad, fn_grad, fn_idx_pt, fn_pt):
             pt[d] = pt[d] + alpha * grad[d]
 
     if fn_idx_pt is not None:
-        fn_idx_pt(idx, pt)
+        fn_idx_pt(idx, pt) # Hmmm. if pt just changed, we've forgotten where it came "from"!
     if fn_pt is not None:
         fn_pt(pt)
     # no return value -- pt and grad mods are IN-PLACE.
@@ -1039,7 +1041,7 @@ def optimize_layout_euclidean(
         The optimized embedding.
     """
 
-    if False:
+    if verbose:
         print("optimize_layout_euclidean")
         print(type(head_embedding), head_embedding.dtype if isinstance(head_embedding, np.ndarray) else "")
         print(type(tail_embedding), tail_embedding.dtype if isinstance(tail_embedding, np.ndarray) else "")
@@ -1056,7 +1058,26 @@ def optimize_layout_euclidean(
         print("move_other", move_other)
         print("output_constrain", output_constrain)
         print("pin_mask", type(pin_mask))
-        print("head,tail shapes", head_embedding.shape, tail_embedding.shape)
+        print("head,tail_emebdding shapes", head_embedding.shape, tail_embedding.shape)
+        for i in range(min(150,head_embedding.shape[0])):
+            print(f"head_embedding[{i}] = {head_embedding[i]}")
+        if head_embedding.shape == tail_embedding.shape and np.allclose(head_embedding,tail_embedding):
+            print("head_embedding ~= tail_embedding")
+        else:
+            print("head_embedding not ~= tail_embedding")
+            for i in range(min(150,head_embedding.shape[0])):
+                print(f"tail_embedding[{i}] = {tail_embedding[i]}")
+
+        print("head,tail           shapes", head.shape, tail.shape)
+        for i in range(min(150,head.shape[0])):
+            print(f"head[{i}] = {head[i]}")
+        if head.shape == tail.shape and np.allclose(head,tail):
+            print("head ~= tail")
+        else:
+            for i in range(min(150,tail_embedding.shape[0])):
+                print(f"tail[{i}] = {tail[i]}")
+
+
 
     dim = head_embedding.shape[1]
     #move_other = head_embedding.shape[0] == tail_embedding.shape[0]
@@ -1136,10 +1157,20 @@ def optimize_layout_euclidean(
             print("pin_mask 2d:", np.sum(pin_mask==0.0), "dimensions of data set shape",
                   pin_mask.shape, "are held fixed")
             # original approach
-            @numba.njit()
-            def pin_mask_constraint(idx,pt):
-                con.freeinf_pt( idx, pt, freeinf_arg )
-            fns_idx_pt = [pin_mask_constraint,]
+            if False:
+                @numba.njit()
+                def pin_mask_constraint(idx,pt):
+                    con.freeinf_pt( idx, pt, freeinf_arg )
+                fns_idx_pt = [pin_mask_constraint,]
+            else: # use freeinf_grad approach instead (maybe a bit faster)
+                # implication: user must change BOTH emb and pin_mask of moved points,
+                # and then give 'init=emb', 'data_constrain=pin_mask' arguments to continue
+                # fitting with (say) 'fit_embed_data'.
+                @numba.njit()
+                def pin_mask_constraint(idx,pt,grad):
+                    return con.freeinf_grad( idx, pt, grad, freeinf_arg )
+                fns_idx_grad = [pin_mask_constraint,]
+
             have_constraints = True
             # OR mirror a tuple-based approach (REMOVED)
             #pin_mask_constraint_tuple = (con.freeinf_pt, freeinf_arg,)

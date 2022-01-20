@@ -7,6 +7,24 @@ from numba.experimental import jitclass
 # They are not applied to optimize_layout_generic (with 'output_metric')
 # They are not applied to optimize_layout_aligned_euclidean (yet?).
 
+# Likely you will want to create your own constraint functions, perhaps
+# combining some of these pre-supplied ideas.
+# For example, instead of 'aligned UMAP' with identity relation, you
+# might add a similar gradient regularisation to minimize distance of
+# a 'new' embedding to a previous 'one'.  Likely you want to combine
+# such a regularization with another set of constraints.
+# (Maybe it is better to derive your own UMAP+constraints object
+#  if this sort of gradient regularisation is done frequently.  In a
+#  sense it is a simplification of aligned UMAP to identity relations
+#  and only a single previous umapper (simplified to a single previous
+#  'tail' embedding).)
+# Trick: really only need to "match previous position" for points that
+# have changed.  i.e. for points whose constraints (or lack) is identical
+# to previous time step.  Points that have dramatically changed of course
+# should NOT try to be close to the previous position; i.e. zero "changeability"
+# cost wrt. the point's previous position.  A refinement might gradually
+# increase the "changeability from previous" as a soft-constraint ages.
+
 #
 # There are 2 broad class of constraint:
 #
@@ -47,7 +65,7 @@ from numba.experimental import jitclass
 # and again does not really evoke the usual idea of tangent space.
 #
 
-#   Remove this ability -- now you supply a single function
+#   Removed this ability -- now you supply a single function
 # Old way (with classes)
 #     Multiple constraints can be supplied as a dictionary:
 #     "grad"    HardPinIndexed, PinNoninf, SoftPinIndexed, Densmap
@@ -56,6 +74,8 @@ from numba.experimental import jitclass
 #     'epoch'
 #     'pin'
 #      ...
+#     This was unwieldy and creating 'function chains' in numba probably
+#     adds a lot of overhead.
 
 # For jit purposes, though, the constraint types must be fully known
 # This causes some issues.  Easiest for now is to supply a single
@@ -105,8 +125,10 @@ def noop_grads(pts,grads):
 #       It can vary depending on whether caller is jitted or not,
 #       and according to whether an argument is an array'view'
 #
-#       Try to make things not-in-place, from now on, for reliability
-#       Never assume in-place modification is going to "just work".
+#       ?? NEEDS REVIEW ??
+#
+#       layouts.py assumes in-place mods still!
+#       Basically, assign to 'x[something]', and not to 'x'
 
 @numba.njit()
 def dimlohi_pt(pt, los=_mock_los, his=_mock_his):
@@ -136,11 +158,17 @@ def dimlohi_pts(pts, los=_mock_los, his=_mock_his):
 # dimlohi_fit     (maybe)
 
 #-------------- pinindexed --------------- certain vectors are fully pinned
+# Why binary search?
+#   so pin_idx can be small, even for big datasets.
+# A version with "full-size" pin info would be faster, and OK for small point clouds.
+#
+# Consider whether 'freeinf_grad' will do the job -- it's array can be [pt,dim] to
+# zero specific dims of specific points.
 @numba.njit()
 def pinindexed_pt(idx, pt, pin_idx=None, pin_pos=None):
     """ pin_idx and pin_pos MUST be sorted by increasing pin_idx by caller.
 
-        order = np.arsort(idx)
+        order = np.argsort(idx)     # e.g. {0:pin0, 5:pin5, ...}, pinN~numpy vectors
         pin_idx = pin_idx[order]
         pin_pos = pin_pos[order]
     """
