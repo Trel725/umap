@@ -211,7 +211,7 @@ def _optimize_layout_euclidean_single_epoch_applygrad(
     dens_mu_tot,
 ):
     #print("opt Euc applygrad")
-    verbose=2
+    #verbose=2
     grad_d     = np.empty(dim, dtype=head_embedding.dtype)
     other_grad = np.empty(dim, dtype=head_embedding.dtype)
     for i in range(epochs_per_sample.shape[0]):
@@ -290,12 +290,12 @@ def _optimize_layout_euclidean_single_epoch_applygrad(
                     grad_d[d]     = gd
                     other_grad[d] = -gd
 
-            if verbose >= 2: print("apply_grad j",j)
+            #if verbose >= 2: print("apply_grad j",j)
             apply_grad(j, current, alpha, grad_d,
                         wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
 
             if move_other:
-                if verbose >= 2: print("move_other k",k)
+                #if verbose >= 2: print("move_other k",k)
                 apply_grad(k, other, alpha, other_grad,
                             wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
 
@@ -333,13 +333,13 @@ def _optimize_layout_euclidean_single_epoch_applygrad(
                             grad_d[d]     = 4.0
                             other_grad[d] = -4.0
 
-                    if verbose >= 2: print("negsample j",j)
+                    #if verbose >= 2: print("negsample j",j)
                     apply_grad(j, current, alpha, grad_d,
                                 wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
 
                     # following is needed for correctness if tail==head
                     if move_other:
-                        if verbose >= 2: print("negsample k",k)
+                        #if verbose >= 2: print("negsample k",k)
                         apply_grad(k, other, alpha, other_grad,
                                     wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
 
@@ -780,10 +780,10 @@ def _optimize_layout_euclidean_single_epoch_para(
                     other_grad[d] = -grad_d[d]
                 if wrap_idx_grad is not None:
                     wrap_idx_grad(j, current, grad_d)
-                    other_grad = wrap_idx_grad(k, other, other_grad)
+                    wrap_idx_grad(k, other, other_grad)
                 if wrap_grad is not None:
                     wrap_grad(current, grad_d)
-                    other_grad = wrap_grad(other, other_grad)
+                    wrap_grad(other, other_grad)
                 for d in range(dim): # post-constraint gradient clip
                     current[d] += alpha * clip(grad_d[d])
                     other[d] += alpha * clip(other_grad[d])
@@ -940,10 +940,10 @@ def _optimize_layout_euclidean_single_epoch_para(
 
 
 
-opt_euclidean = numba.njit(_optimize_layout_euclidean_single_epoch_applygrad,
-                            fastmath=True, parallel=False,)
-#opt_euclidean = numba.njit(_optimize_layout_euclidean_single_epoch,
+#opt_euclidean = numba.njit(_optimize_layout_euclidean_single_epoch_applygrad,
 #                            fastmath=True, parallel=False,)
+opt_euclidean = numba.njit(_optimize_layout_euclidean_single_epoch,
+                            fastmath=True, parallel=False,)
 
 opt_euclidean_para = numba.njit(_optimize_layout_euclidean_single_epoch_para,
                                  fastmath=True, parallel=True, nogil=True)
@@ -1142,7 +1142,7 @@ def optimize_layout_euclidean(
         #   where tuple ~ (jit_function, [const_args,...]) (or empty)
         #print("constraints", pin_mask.keys())
         for kk,k in enumerate(pin_mask.keys()):
-            print("kk,k",kk,k)
+            if verbose: print("kk,k",kk,k)
             if k=='idx_pt':
                 fns_idx_pt = [pin_mask[k]] # revert: do NOT support a list, numba issues?
                 have_constraints = True
@@ -1166,7 +1166,7 @@ def optimize_layout_euclidean(
             for i in range(pin_mask.size):
                 if pin_mask[i]==0.0:
                     idxs.append(i)
-            print("pin_mask 1d:",  len(idxs), "points don't move")
+            if verbose: print("pin_mask 1d:",  len(idxs), "points don't move")
             fixed_pos_idxs = np.array(idxs)
             # todo [opt]: no-op if zero points were fixed
             @numba.njit()
@@ -1186,8 +1186,9 @@ def optimize_layout_euclidean(
             # and then uses a 'freeinf' constraint from constraints.py
             # Current fixed point dimensions are copied into the constraint itself.
             freeinf_arg = np.where( pin_mask == 0.0, head_embedding, np.float32(np.inf) )
-            print("pin_mask 2d:", np.sum(pin_mask==0.0), "dimensions of data set shape",
-                  pin_mask.shape, "are held fixed")
+            if verbose:
+                print("pin_mask 2d:", np.sum(pin_mask==0.0), "values in data set shape",
+                      pin_mask.shape, "are held fixed")
             # original approach
             if False:
                 @numba.njit()

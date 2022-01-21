@@ -257,24 +257,42 @@ def freeinf_grads(pts, grads, infs=None):
     grads[:,:] = np.where( np.isinf(infs), grads, grads.dtype.type(0.0) )
     return grads
 
-## Experimental: numba jitclass -- provide context for the 'infs' arg
-## (can re-use with modified 'infs', without temporary jitfunc compiles)
-#@numba.experimental.jitclass
-#class Freeinf(object):
-#    """ object wrapping freeinf_*, minus sanity checks. """
-#    infs : np.ndarray
-#
-#    def __init__(self, arr: np.ndarray):
-#        assert( arr.ndim == 2 )
-#        self.infs = arr.copy()
-#
-#    def pt(idx,pt):
-#        for d in range(self.infs.shape[1]):
-#            i
-#            pt[idx,d] = pt[idx,d] if np.isinf(self.infs[idx,d]) else infs
-#
-#
-        
+if False:
+    # Experimental: numba jitclass -- provide context for the 'infs' arg
+    # (can re-use with modified 'infs', without temporary jitfunc compiles)
+    @numba.experimental.jitclass([("infs", float32[:,:])])
+    class Freeinf(object):
+        """ object wrapping freeinf_*, minus sanity checks. """
+        # As opposed to above functions, a FreeInf object allows the user
+        # to modify/adjust the 'infs' (or pinned values if non-inf)
+        # and not have to do any jit recompiles in a fast execution path.
+        #
+        # If successful, perhaps all constraints should be written in object
+        # form?
+        #
+        infs : np.ndarray # Cannot infer numba type, need spec too
+
+        def __init__(self, arr: np.ndarray):
+            assert( arr.ndim == 2 )
+            self.infs = arr.copy()
+
+        def pt(idx,pt):
+            dim = np.min(pt.shape[0], self.infs.shape[1])
+            for d in range(dim):
+                pin = self.infs[idx,d]
+                pt[idx,d] = pt[idx,d] if np.isinf(pin) else pin
+            return pt
+
+        def grad(idx,pt,grad):
+            dim = np.min(grad.shape[0], self.infs.shape[1])
+            for d in range(dim):
+                pin = self.infs[idx,d]
+                grad[idx,d] = pt[idx,d] if np.isinf(pin) else pin
+            return grad
+
+        #def pts...
+        #def grads...
+
 
 
 # ----------------- springindexed ------------- indexed spring constants
