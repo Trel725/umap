@@ -134,8 +134,8 @@ if False: # 'chaining' multiple constraints is perhaps too complicated
     #
 
 #
-# REMOVED apply_grad -- it is MUCH faster when inlined
-#                     -- it is only used 4 times
+# apply_grad -- it is MUCH faster when inlined
+#            -- it is only used 4 times (but gives clearer code)
 # for code clarity ... reduce code duplication
 # Is numba jit able to elide "is not None" code blocks?
 #    Quick tests show that using 'None' (or optional), numba may fail
@@ -210,6 +210,8 @@ def _optimize_layout_euclidean_single_epoch_applygrad(
     dens_mu,
     dens_mu_tot,
 ):
+    #print("opt Euc applygrad")
+    verbose=2
     grad_d     = np.empty(dim, dtype=head_embedding.dtype)
     other_grad = np.empty(dim, dtype=head_embedding.dtype)
     for i in range(epochs_per_sample.shape[0]):
@@ -288,10 +290,12 @@ def _optimize_layout_euclidean_single_epoch_applygrad(
                     grad_d[d]     = gd
                     other_grad[d] = -gd
 
+            if verbose >= 2: print("apply_grad j",j)
             apply_grad(j, current, alpha, grad_d,
                         wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
 
             if move_other:
+                if verbose >= 2: print("move_other k",k)
                 apply_grad(k, other, alpha, other_grad,
                             wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
 
@@ -329,11 +333,13 @@ def _optimize_layout_euclidean_single_epoch_applygrad(
                             grad_d[d]     = 4.0
                             other_grad[d] = -4.0
 
+                    if verbose >= 2: print("negsample j",j)
                     apply_grad(j, current, alpha, grad_d,
                                 wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
 
                     # following is needed for correctness if tail==head
                     if move_other:
+                        if verbose >= 2: print("negsample k",k)
                         apply_grad(k, other, alpha, other_grad,
                                     wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
 
@@ -381,6 +387,7 @@ def _optimize_layout_euclidean_single_epoch(
     #   TODO: Work through constraint correctness when these fail!
     assert head_embedding.shape == tail_embedding.shape  # nice for constraints
     assert np.all(head_embedding == tail_embedding)
+    #print("opt Euc optimized")
 
     _grad_mods = wrap_idx_grad is not None or wrap_grad is not None
     # naah -- this did not remedy removal of neg sample 'move_other' code
@@ -666,11 +673,21 @@ def _optimize_layout_euclidean_single_epoch_para(
 ):
     assert head_embedding.shape == tail_embedding.shape  # nice for constraints
     assert np.all(head_embedding == tail_embedding)
+    #print("opt Euc ||")
+    #verbose=2
 
+    #
+    # thread-local memory area[s]:
+    #
     nthr = numba.get_num_threads() # if parallel, provide non-overlapped scratch areas
-    dimx = (2*dim+1024 + 1024-1) // 1024 # 2*dim pts rounded up to mult of 1024
-    tmp = np.empty( (nthr, dimx), dtype=head_embedding.dtype ) # can do 2d or 1d tmp
-    #tmp = np.empty( (nthr * dimx), dtype=head_embedding.dtype ) 
+    #dimx = (2*dim+1024 + 1024-1) // 1024 # 2*dim pts rounded up to mult of 1024
+    #tmp = np.empty( (nthr, dimx), dtype=head_embedding.dtype ) # can do 2d or 1d tmp
+    # But couldn't co-locate succesfully and pass a "right-sized view" into the tmp space
+    # SO... just do 2 separate allocs
+    dimx = (dim+1024 + 1024-1) // 1024 # 1*dim pts rounded up to mult of 1024
+    tmp1 = np.empty( (nthr, dimx), dtype=head_embedding.dtype )
+    if move_other:
+        tmp2 = np.empty( (nthr, dimx), dtype=head_embedding.dtype )
 
     # reclip gradients *after* gradient-modifying constraints?
     _grad_mods = wrap_idx_grad is not None or wrap_grad is not None
@@ -747,18 +764,26 @@ def _optimize_layout_euclidean_single_epoch_para(
             grad_coeff += 2.0*grad_cor_coeff
 
         if move_other:
-            grad_d = tmp[ thr, 0:dim ]
-            other_grad = tmp[ thr, dim:(dim+dim) ]
+            #print("|| move_other j",j,"k",k)
+            #grad_d = tmp[ thr, 0:dim ]
+            #other_grad = tmp[ thr, dim:(dim+dim) ] # this is a "VIEW", so constraints are FUBAR
+            # GOOD: grad_d shape is (2,)
+            # OHOH other_grad.shape is (0,)
+            grad_d = tmp1[ thr, 0:dim ]
+            other_grad = tmp2[ thr, 0:dim ] # this is a "VIEW", so constraints are FUBAR
+            #if other_grad.shape != other.shape:
+            #    print("WARNING: other_grad.shape",other_grad.shape,"expected",other.shape)
+            #    print("             grad_d.shape",grad_d.shape)
             if _grad_mods:
                 for d in range(dim):
                     grad_d[d] = grad_coeff * (current[d]-other[d]) # without clip
                     other_grad[d] = -grad_d[d]
                 if wrap_idx_grad is not None:
                     wrap_idx_grad(j, current, grad_d)
-                    wrap_idx_grad(k, other, other_grad)
+                    other_grad = wrap_idx_grad(k, other, other_grad)
                 if wrap_grad is not None:
                     wrap_grad(current, grad_d)
-                    wrap_grad(other, other_grad)
+                    other_grad = wrap_grad(other, other_grad)
                 for d in range(dim): # post-constraint gradient clip
                     current[d] += alpha * clip(grad_d[d])
                     other[d] += alpha * clip(other_grad[d])
@@ -778,7 +803,9 @@ def _optimize_layout_euclidean_single_epoch_para(
                 wrap_pt(current)
                 wrap_pt(other)
         else:
-            grad_d = tmp[ thr, 0:dim ]
+            #print("|| j",j)
+            #grad_d = tmp[ thr, 0:dim ]
+            grad_d = tmp1[ thr, 0:dim ]
             if _grad_mods:
                 for d in range(dim):
                     grad_d[d] = grad_coeff * (current[d]-other[d]) # elide clip here
@@ -824,6 +851,7 @@ def _optimize_layout_euclidean_single_epoch_para(
 
             #if move_other: # stock umap NEVER does this...
             if False:
+                #print("|| neg j",j,"k",k)
                 #
                 # Note: stock umap NEVER does move_other for -ve samples
                 #
@@ -875,6 +903,7 @@ def _optimize_layout_euclidean_single_epoch_para(
                 # Technically, might argue for:
                 #epoch_of_next_negative_sample[k] += epochs_per_negative_sample[k]
             else:
+                #print("|| neg j",j)
                 if _grad_mods:
                     if grad_coeff > 0.0:
                         for d in range(dim):
@@ -911,8 +940,10 @@ def _optimize_layout_euclidean_single_epoch_para(
 
 
 
-opt_euclidean = numba.njit(_optimize_layout_euclidean_single_epoch,
+opt_euclidean = numba.njit(_optimize_layout_euclidean_single_epoch_applygrad,
                             fastmath=True, parallel=False,)
+#opt_euclidean = numba.njit(_optimize_layout_euclidean_single_epoch,
+#                            fastmath=True, parallel=False,)
 
 opt_euclidean_para = numba.njit(_optimize_layout_euclidean_single_epoch_para,
                                  fastmath=True, parallel=True, nogil=True)
@@ -1041,6 +1072,7 @@ def optimize_layout_euclidean(
         The optimized embedding.
     """
 
+    #verbose = True
     if verbose:
         print("optimize_layout_euclidean")
         print(type(head_embedding), head_embedding.dtype if isinstance(head_embedding, np.ndarray) else "")

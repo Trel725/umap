@@ -208,6 +208,8 @@ def pinindexed_grads(pts, grads, pin_idx=[{}]):
 
 # --------------- freeinf ------------ np.inf are "free", all else pinned
 # infs is same size as full point cloud, nsamp x dim
+# conceptually, you can set infs to all-np.inf, and then
+# constrain whichever dims of whichever points by setting infs[pt,dim]=0.0
 @numba.njit()
 def freeinf_pt(idx, pt, infs):
     # idx must be a scalar :(
@@ -236,11 +238,16 @@ def freeinf_pts(pts, infs=None):
 
 @numba.njit()
 def freeinf_grad(idx, pt, grad, infs=None):
+    #assert grad.shape[0] == infs.shape[1]
+    #if grad.shape[0] == 0:
+    #    print("WARNING: freeinf_grad grad.shape",grad.shape," expected",pt.shape)
     if infs is not None:
         if idx < infs.shape[0]:
             vals = infs[idx,:]
             mask = ~np.isinf(vals)
             grad[mask] = grad.dtype.type(0.0)
+            #if mask.sum(): # any infs?
+            #    print("freeinf_grad(",idx,pt,grad,")\n   vals=",vals)
     return grad
 
 @numba.njit()
@@ -249,6 +256,26 @@ def freeinf_grads(pts, grads, infs=None):
     # Here's how to match the scalar type with 'grads.dtype'
     grads[:,:] = np.where( np.isinf(infs), grads, grads.dtype.type(0.0) )
     return grads
+
+## Experimental: numba jitclass -- provide context for the 'infs' arg
+## (can re-use with modified 'infs', without temporary jitfunc compiles)
+#@numba.experimental.jitclass
+#class Freeinf(object):
+#    """ object wrapping freeinf_*, minus sanity checks. """
+#    infs : np.ndarray
+#
+#    def __init__(self, arr: np.ndarray):
+#        assert( arr.ndim == 2 )
+#        self.infs = arr.copy()
+#
+#    def pt(idx,pt):
+#        for d in range(self.infs.shape[1]):
+#            i
+#            pt[idx,d] = pt[idx,d] if np.isinf(self.infs[idx,d]) else infs
+#
+#
+        
+
 
 # ----------------- springindexed ------------- indexed spring constants
 # pin_idx ascending (re-sort pin_pos and springs to match)
