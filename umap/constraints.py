@@ -260,7 +260,7 @@ def freeinf_grads(pts, grads, infs=None):
 if False:
     # Experimental: numba jitclass -- provide context for the 'infs' arg
     # (can re-use with modified 'infs', without temporary jitfunc compiles)
-    @numba.experimental.jitclass([("infs", float32[:,:])])
+    @numba.experimental.jitclass([("infs", numba.float32[:,:])])
     class Freeinf(object):
         """ object wrapping freeinf_*, minus sanity checks. """
         # As opposed to above functions, a FreeInf object allows the user
