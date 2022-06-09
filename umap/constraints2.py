@@ -66,7 +66,7 @@ _mock_zeros = np.zeros(2, dtype=np.float64)
 # mirroring the approach of distances.py
 
 # Here, instead of a class encapsulating all params, the constraint parameters
-# are passed as a tuple (of constraint_kwds 
+# are passed as a tuple (of constraint_kwds)
 
 # The class methods become function name suffixes
 #   class method                    suffix      args
@@ -74,7 +74,7 @@ _mock_zeros = np.zeros(2, dtype=np.float64)
 #   project_onto_constraint         _pt         idx, pt
 #   project_rows_onto_constraint    _pts        pts
 #   project_onto_tangent_space      _grad       idx, pt, grad
-#   project_rows_onto_tangent_space _grads      grads
+#   project_rows_onto_tangent_space _grads      pts, grads
 #    (maybe) fit_onto_constraint    _fit        pts (?)
 # for dataset-agnostic projectors (supplied to UMAP constructor) the
 # 'idx' argument is dropped.
