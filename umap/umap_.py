@@ -853,6 +853,7 @@ def discrete_metric_simplicial_set_intersection(
 def general_simplicial_set_intersection(
     simplicial_set1, simplicial_set2, weight=0.5, right_complement=False
 ):
+    if weight != 0.5: print("intersect weight",weight)
 
     if right_complement:
         result = simplicial_set1.tocoo()
@@ -878,7 +879,7 @@ def general_simplicial_set_intersection(
     return result
 
 
-def general_simplicial_set_union(simplicial_set1, simplicial_set2):
+def general_simplicial_set_union(simplicial_set1, simplicial_set2, weight=0.5):
     result = (simplicial_set1 + simplicial_set2).tocoo()
     left = simplicial_set1.tocsr()
     right = simplicial_set2.tocsr()
@@ -893,6 +894,7 @@ def general_simplicial_set_union(simplicial_set1, simplicial_set2):
         result.row,
         result.col,
         result.data,
+        mix_weight=weight,
     )
 
     return result
@@ -2034,7 +2036,7 @@ class UMAP(BaseEstimator):
         self._a = flattened([m._a for m in models])
         self._b = flattened([m._b for m in models])
 
-    def __mul__(self, other):
+    def __mul__(self, other, weight=0.5):
 
         check_is_fitted(
             self, attributes=["graph_"], msg="Only fitted UMAP models can be combined"
@@ -2050,7 +2052,7 @@ class UMAP(BaseEstimator):
         result._populate_combined_params(self, other)
 
         result.graph_ = general_simplicial_set_intersection(
-            self.graph_, other.graph_, 0.5
+            self.graph_, other.graph_, weight=weight
         )
         result.graph_ = reset_local_connectivity(result.graph_, True)
 
@@ -2110,7 +2112,7 @@ class UMAP(BaseEstimator):
 
         return result
 
-    def __add__(self, other):
+    def __add__(self, other, weight=0.5):
 
         check_is_fitted(
             self, attributes=["graph_"], msg="Only fitted UMAP models can be combined"
@@ -2125,7 +2127,7 @@ class UMAP(BaseEstimator):
         result = UMAP()
         result._populate_combined_params(self, other)
 
-        result.graph_ = general_simplicial_set_union(self.graph_, other.graph_)
+        result.graph_ = general_simplicial_set_union(self.graph_, other.graph_, weight=weight)
         result.graph_ = reset_local_connectivity(result.graph_, True)
 
         if scipy.sparse.csgraph.connected_components(result.graph_)[0] > 1:
@@ -2184,7 +2186,7 @@ class UMAP(BaseEstimator):
 
         return result
 
-    def __sub__(self, other):
+    def __sub__(self, other, weight=0.5):
 
         check_is_fitted(
             self, attributes=["graph_"], msg="Only fitted UMAP models can be combined"
@@ -2200,7 +2202,7 @@ class UMAP(BaseEstimator):
         result._populate_combined_params(self, other)
 
         result.graph_ = general_simplicial_set_intersection(
-            self.graph_, other.graph_, weight=0.5, right_complement=True
+            self.graph_, other.graph_, weight=weight, right_complement=True
         )
         result.graph_ = reset_local_connectivity(result.graph_, False)
 

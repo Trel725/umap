@@ -207,6 +207,7 @@ def general_sset_union(
     result_row,
     result_col,
     result_val,
+    mix_weight=0.5, # [ejk] added to mirror intersection weighting method
 ):
     left_min = max(data1.min() / 2.0, 1.0e-8)
     right_min = max(data2.min() / 2.0, 1.0e-8)
@@ -224,6 +225,13 @@ def general_sset_union(
         for k in range(indptr2[i], indptr2[i + 1]):
             if indices2[k] == j:
                 right_val = data2[k]
+
+        if mix_weight != 0.5:
+            if left_val > left_min or right_val > right_min:
+                if mix_weight < 0.5:
+                    right_val = pow( right_val, mix_weight / (1.0 - mix_weight))
+                else:
+                    left_val = pow(left_val, (1.0 - mix_weight) / mix_weight)
 
         result_val[idx] = left_val + right_val - left_val * right_val
 

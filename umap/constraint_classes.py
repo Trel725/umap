@@ -1,5 +1,9 @@
 import numpy as np
 import numba
+import math
+#
+# WARNING:  These are NOT supported by layouts.py at all
+#           These are EXPERIMENTAL
 from numba.experimental import jitclass
 
 # A very liberal constraint ...
@@ -122,18 +126,30 @@ class DimLohi(object):
         # just for show, maybe useful for other 'whole point cloud' constraints
         """ In-place bounding of mat[i,dim] dimension-wise """
         if len(mat.shape) == 2 and mat.shape[1] >= self.lo.size:
-            for i in range(mat.shape[0]):
-                for j in range(self.lo.size):
-                    #print("cmp",self.lo[i], vec[i], self.hi[i])
-                    if   mat[i,j] < self.lo[j]:
-                         mat[i,j] = self.lo[j]
-                    elif mat[i,j] > self.hi[j]:
-                         mat[i,j] = self.hi[j]
+            for j in range(self.lo.size):
+                if los[j] <= his[j]:
+                    for i in range(mat.shape[0]):
+                        #print("cmp",self.lo[i], vec[i], self.hi[i])
+                        if   mat[i,j] < self.lo[j]:
+                             mat[i,j] = self.lo[j]
+                        elif mat[i,j] > self.hi[j]:
+                             mat[i,j] = self.hi[j]
         else:
             print("Mismatch between mat shape",mat.shape,"with DimLohi size", self.lo.size)
         return mat
 
-    def project_onto_tangent_space(self, vec, grad):
+    def project_index_onto_tangent_space(self, idx, vec, grad):
+        """ Adjust grad to lie on tangent space for one point.  Note that
+        the point is assumed to satisfy the constraint upon entry.  If not,
+        then the gradient adjustment won't fix a bad point at all!
+        """
+        if self.los[idx] < self.his[idx]:
+            if vec[i] <= self.lo[i]: # hopefully equal
+                grad[i] = np.max( grad[i], 0 )
+            if vec[i] >= self.hi[i]: # hopefully equal
+                grad[i] = np.min( grad[i], 0 )
+
+    def project_rows_onto_tangent_space(self, vec, grad):
         """ Adjust grad to lie on tangent space at point vec.  Basically,
             take a close "allowed" directional derivative on the tangent
             plane and translate it to the origin (since zero must always
@@ -161,7 +177,7 @@ class DimLohi(object):
         return grad
 
     def fit_onto_constraint(self, mat):
-        """ rescale nsmaples x dim point-cloud mat to (/almost) satisfy a
+        """ rescale nsamples x dim point-cloud mat to (/almost) satisfy a
         constraint, with little (/no) change to relative distances.
 
         The idea is to lessen the amount of readjustment required during
@@ -290,10 +306,16 @@ class PinNoninf(object):
         """ If row 'idx' of self.unpin is not infinity, change vec to self.unpin value.
             In-place modification of vec (if possible).
         """
+        #mask = ~np.isinf(vals)
+        #vec[mask] = vals[mask]
+        # alt:
+        #vec0 = vec.copy()
+        #vec[:] = np.where( np.isinf(vals), vec, pt )
         vals = self.unpin[idx,:]
-        mask = ~np.isinf(vals)
-        vec[mask] = vals[mask]
-        return vec
+        dim = min(vec.shape[0], vals.shape[0])
+        for i in range(dim):
+            vec[i] = vec[i] if math.isinf(vals[i]) else vals[i]
+        #return vec
 
     def project_index_onto_tangent_space(self, idx, vec, grad):
         """ zero out those gradients for vec
@@ -303,22 +325,22 @@ class PinNoninf(object):
         vals = self.unpin[idx,:]
         mask = ~np.isinf(vals)
         grad[mask] = 0.0
-        return grad
+        #return grad
 
     def project_rows_onto_constraint(self, data):
         """ Take anchored (sample in self.idx) subset of data[samples, dim]
             to pinned posn.
         """
         # 'where' faster than subarray assignment
-        data = np.where( np.isinf(self.unpin), data, self.unpin )
-        return data
+        data[:,:] = np.where( np.isinf(self.unpin), data, self.unpin )
+        #return data
 
     def project_rows_onto_tangent_space(self, data, grads):
         """ zero out the gradients for vec, which must be one of the anchors """
         #del data # not with jit
         #grads[self.idx,:] = 0.0
-        grads = np.where( np.isinf(self.unpin), grads, 0 )
-        return grads
+        grads[:,:] = np.where( np.isinf(self.unpin), grads, 0 )
+        #return grads
 
 softPinIndexedSpec = [
     ("idx",       numba.types.int32[:]),  # list of pinned samples, of length sum(is_pinned)
@@ -369,32 +391,42 @@ class SoftPinIndexed(object):
     def project_index_onto_constraint(self, idx, vec):
         i = np.searchsorted(self.idx, idx)
         if i < self.npin and self.idx[i] == idx and self.spring[i] == np.inf:
-            vec = self.pos[i]
-        return vec
+            vec[:] = self.pos[i]
+        #return vec
 
     def project_index_onto_tangent_space(self, idx, vec, grad):
         """ zero out the gradients for vec, which must be one of the anchors """
         i = np.searchsorted(self.idx, idx)
         if self.idx[i] == idx:
             if self.spring[i] == np.inf:
-                grad = 0.0 # or (more generally) "towards self.pos" ?
+                grad[:] = 0.0 # or (more generally) "towards self.pos" ?
                 # This kinda' assumes the point has already been properly
                 # projected, as for "hard pinning case".   This needs some
                 # sync with what's done client-side.
             else:
-                grad += self.spring * np.square(vec - self.pos[i])
+                delta = pin_pos[i] - pt
+                dist = np.sqrt(np.sum(np.square(delta)))
+                grad[:] += (self.spring[i] * dist) * delta
         return grad
 
     def project_rows_onto_constraint(self, data):
         """ Take infinite-force anchorings to pinned posn o/w no-op.  """
-        moves = np.isinf[self.idx]
-        data[ np.isinf[self.idx],: ] = self.pos
+        data[ self.idx[np.isinf[self.springs]], : ] = self.pos[ np.isinf(springs) ]
         return vec
 
     def project_rows_onto_tangent_space(self, data, grads):
         """ zero out the gradients for vec, which must be one of the anchors """
         #del data # not with jit
-        grads[self.idx,:] = 0.0
+        #grads[self.idx,:] = 0.0
+        for (i,idx) in enumerate(self.idx):
+            if self.spring[i] == np.inf:
+                # 0.0 (don't care) assumes we'll project pt after applying grad
+                # alt is to cap springs[i] and have a real force
+                grads[idx,:] = 0.0
+            else:
+                delta = pin_pos[i] - pts[idx,:]
+                dist = np.sqrt(np.sum(np.square(delta)))
+                grads[idx,:] += (self.spring[i] * dist) * delta
         return grad
 
 
@@ -553,5 +585,5 @@ if __name__ == "__main__":
     test_DimLohi()
     test_HardPinIndexed()
     test_SoftPinIndexed()
-    #test_PinNonif()  # TBD
+    #test_PinNoninf()  # TBD
 #
