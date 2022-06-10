@@ -129,9 +129,12 @@ def dimlohi_pts(pts, los=_mock_los, his=_mock_his):
 #-------------- pinindexed --------------- certain vectors are fully pinned
 @numba.njit()
 def pinindexed_pt(idx, pt, pin_idx=None, pin_pos=None):
-    """ pin_idx and pin_pos MUST be sorted by increasing pin_idx by caller.
+    """ pin_idx, pin_pos are vectors of all pin info.
+        UMAP passes us an idx and pt, which MIGHT need adjustment.
 
-        order = np.arsort(idx)
+        pin_idx and pin_pos MUST be sorted by increasing pin_idx by caller.
+
+        order = np.argsort(idx)
         pin_idx = pin_idx[order]
         pin_pos = pin_pos[order]
     """
@@ -216,6 +219,8 @@ def freeinf_grads(pts, grads, infs=None):
 # ----------------- springindexed ------------- indexed spring constants
 # pin_idx ascending (re-sort pin_pos and springs to match)
 # Note: these "springs" have equilibrium length zero!
+#
+# Projections to a "point" can only occur with infinite spring force.
 @numba.njit()
 def springindexed_pt(idx, pt, pin_idx=None, pin_pos=None, springs=None):
     assert pin_idx is not None and pin_pos is not None and springs is not None
@@ -241,6 +246,10 @@ def springindexed_pts(pts, pin_idx=None, pin_pos=None, springs=None):
     pts[ pin_idx[np.isinf(springs)], : ] = pin_pos[ np.isinf(springs) ]
     return pts
 
+# The more general springs ONLY operate on gradients
+# i.e. a wrap_idx_grad for spring between idx and a fixed pt
+# TODO: gradient update between two indices
+# TODO: gradient clustering force between any set of indices.
 @numba.njit()
 def springindexed_grad(idx, pt, grad, pin_idx=None, pin_pos=None, springs=None):
     i = np.searchsorted(pin_idx, idx)
