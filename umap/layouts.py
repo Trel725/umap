@@ -140,12 +140,13 @@ if False: # 'chaining' multiple constraints is perhaps too complicated
 #    to elide the code block :(  (used env NUMBA_DEBUG to check simple cases)
 #@numba.njit() # use to inspect
 @numba.njit(inline='always')
-def apply_grad(idx, pt, alpha, grad, fn_idx_grad, fn_grad, fn_idx_pt, fn_pt):
+def apply_grad(idx, pt, alpha, grad, fn_idx_grad, fn_grad, fn_idx_pt, fn_pt,
+               embedding, fn_idx_pts):
     """ updates pt by (projected?) grad and any pt projection functions.
 
     idx:    point number
-    pt:     point vector
-    alpha:  learning rate
+    pt:     point vector TODO: or point matrix[idx,loD]
+    alpha:  learning rate (applied to (clipped?) gradient)
     grad:   gradient vector
     fn_...: constraint functions (or None)
     
@@ -170,6 +171,8 @@ def apply_grad(idx, pt, alpha, grad, fn_idx_grad, fn_grad, fn_idx_pt, fn_pt):
 
     if fn_idx_pt is not None:
         fn_idx_pt(idx, pt) # Hmmm. if pt just changed, we've forgotten where it came "from"!
+    if fn_idx_pts is not None:
+        fn_idx_pts(idx, embedding)
     if fn_pt is not None:
         fn_pt(pt)
     # no return value -- pt and grad mods are IN-PLACE.
@@ -195,6 +198,7 @@ def _optimize_layout_euclidean_single_epoch_applygrad(
     epoch_of_next_sample,
     n,              # epoch
     wrap_idx_pt,    # NEW: constraint fn(idx,pt) or None
+    wrap_idx_pts,   #      NEWER alt  fn(idx,pts) or None
     wrap_idx_grad,  #      constraint fn(idx,pt,grad) or None
     wrap_pt,        #      constraint fn(pt) or None
     wrap_grad,      #      constraint fn(pt,grad) or None
@@ -291,12 +295,14 @@ def _optimize_layout_euclidean_single_epoch_applygrad(
 
             #if verbose >= 2: print("apply_grad j",j)
             apply_grad(j, current, alpha, grad_d,
-                        wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
+                       wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt,
+                       tail_embedding, wrap_idx_pts) # head_embedding==tail_embedding
 
             if move_other:
                 #if verbose >= 2: print("move_other k",k)
                 apply_grad(k, other, alpha, other_grad,
-                            wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
+                           wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt,
+                           tail_embedding, wrap_idx_pts) # head_embedding==tail_embedding
 
             epoch_of_next_sample[i] += epochs_per_sample[i]
 
@@ -334,13 +340,15 @@ def _optimize_layout_euclidean_single_epoch_applygrad(
 
                     #if verbose >= 2: print("negsample j",j)
                     apply_grad(j, current, alpha, grad_d,
-                                wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
+                               wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt,
+                               tail_embedding, wrap_idx_pts) # head_embedding==tail_embedding
 
                     # following is needed for correctness if tail==head
                     if move_other:
                         #if verbose >= 2: print("negsample k",k)
                         apply_grad(k, other, alpha, other_grad,
-                                    wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt)
+                                   wrap_idx_grad, wrap_grad, wrap_idx_pt, wrap_pt,
+                                   tail_embedding, wrap_idx_pts)
 
                 epoch_of_next_negative_sample[i] += (
                     n_neg_samples * epochs_per_negative_sample[i]
@@ -368,6 +376,7 @@ def _optimize_layout_euclidean_single_epoch(
     epoch_of_next_sample,
     n,              # epoch
     wrap_idx_pt,    # NEW: constraint fn(idx,pt) or None
+    wrap_idx_pts,   #                    idx, pts
     wrap_idx_grad,  #      constraint fn(idx,pt,grad) or None
     wrap_pt,        #      constraint fn(pt) or None
     wrap_grad,      #      constraint fn(pt,grad) or None
@@ -476,6 +485,9 @@ def _optimize_layout_euclidean_single_epoch(
                 if wrap_idx_pt is not None:
                     wrap_idx_pt(j, current)
                     wrap_idx_pt(k, other)
+                if wrap_idx_pts is not None:
+                    wrap_idx_pts(j, head_embedding) # == tail_embedding
+                    wrap_idx_pts(k, tail_embedding)
                 if wrap_pt is not None:
                     wrap_pt(current)
                     wrap_pt(other)
@@ -498,6 +510,8 @@ def _optimize_layout_euclidean_single_epoch(
 
                 if wrap_idx_pt is not None:
                     wrap_idx_pt(j, current)
+                if wrap_idx_pts is not None:
+                    wrap_idx_pts(j, head_embedding) # == tail_embedding
                 if wrap_pt is not None:
                     wrap_pt(current)
 
@@ -582,6 +596,9 @@ def _optimize_layout_euclidean_single_epoch(
                     if wrap_idx_pt is not None:
                         wrap_idx_pt(j, current)
                         wrap_idx_pt(k, other)
+                    if wrap_idx_pts is not None:
+                        wrap_idx_pts(j, head_embedding) # == tail_embedding
+                        wrap_idx_pts(k, tail_embedding)
                     if wrap_pt is not None:
                         wrap_pt(current)
                         wrap_pt(other)
@@ -589,6 +606,7 @@ def _optimize_layout_euclidean_single_epoch(
                     # much slower
                     #epoch_of_next_negative_sample[k] += epochs_per_negative_sample[k]
                 else:
+                    # neg samples never respect move_other (original umap behavior)
                     if _grad_mods:
                         if grad_coeff > 0.0:
                             for d in range(dim):
@@ -617,6 +635,8 @@ def _optimize_layout_euclidean_single_epoch(
                     #    current[d] += alpha * grad_d[d]
                     if wrap_idx_pt is not None:
                         wrap_idx_pt(j, current)
+                    if wrap_idx_pts is not None:
+                        wrap_idx_pts(j, head_embedding) # == tail_embedding
                     if wrap_pt is not None:
                         wrap_pt(current)
 
@@ -637,6 +657,9 @@ def _optimize_layout_euclidean_single_epoch(
 # (Finally faster for iris X[150,4] data, ~ 2x for 8 cpu laptop)
 # It uses a work area shared between threads, and uses a numba internal
 # to give 'current thread number' (ok for tbb or omp numba backends only)
+#
+# Note: I think parallel + move_other with constraints is fragile (modification races)
+#
 def _optimize_layout_euclidean_single_epoch_para(
     head_embedding,
     tail_embedding,
@@ -656,6 +679,7 @@ def _optimize_layout_euclidean_single_epoch_para(
     epoch_of_next_sample,
     n,              # epoch
     wrap_idx_pt,    # NEW: constraint fn(idx,pt) or None
+    wrap_idx_pts,   #                    idx,pts
     wrap_idx_grad,  #      constraint fn(idx,pt,grad) or None
     wrap_pt,        #      constraint fn(pt) or None
     wrap_grad,      #      constraint fn(pt,grad) or None
@@ -798,6 +822,10 @@ def _optimize_layout_euclidean_single_epoch_para(
             if wrap_idx_pt is not None:
                 wrap_idx_pt(j, current)
                 wrap_idx_pt(k, other)
+            if wrap_idx_pts is not None:
+                #print("wrap_idx_pts", j, head_embedding)
+                wrap_idx_pts(j, head_embedding) # == tail_embedding
+                wrap_idx_pts(k, tail_embedding)
             if wrap_pt is not None:
                 wrap_pt(current)
                 wrap_pt(other)
@@ -819,6 +847,8 @@ def _optimize_layout_euclidean_single_epoch_para(
                     current[d] += alpha * clip(grad_coeff * (current[d]-other[d]))
             if wrap_idx_pt is not None:
                 wrap_idx_pt(j, current)
+            if wrap_idx_pts is not None:
+                wrap_idx_pts(j, head_embedding) # == tail_embedding
             if wrap_pt is not None:
                 wrap_pt(current)
 
@@ -853,6 +883,7 @@ def _optimize_layout_euclidean_single_epoch_para(
                 #print("|| neg j",j,"k",k)
                 #
                 # Note: stock umap NEVER does move_other for -ve samples
+                #       neg sample move_other is DISABLED for parallel version
                 #
                 # Divergence:
                 #  move_other here is needed for correctness if tail==head,
@@ -895,6 +926,9 @@ def _optimize_layout_euclidean_single_epoch_para(
                 if wrap_idx_pt is not None:
                     wrap_idx_pt(j, current)
                     wrap_idx_pt(k, other)
+                if wrap_idx_pts is not None:
+                    wrap_idx_pts(j, head_embedding) # == tail_embedding
+                    wrap_idx_pts(k, tail_embedding)
                 if wrap_pt is not None:
                     wrap_pt(current)
                     wrap_pt(other)
@@ -928,6 +962,8 @@ def _optimize_layout_euclidean_single_epoch_para(
                 #    current[d] += grad_d[d]
                 if wrap_idx_pt is not None:
                     wrap_idx_pt(j, current)
+                if wrap_idx_pts is not None:
+                    wrap_idx_pts(j, head_embedding) # == tail_embedding
                 if wrap_pt is not None:
                     wrap_pt(current)
 
@@ -1056,10 +1092,17 @@ def optimize_layout_euclidean(
         Keyword arguments for tqdm progress bar.
     move_other: bool (optional, default False)
         Whether to adjust tail_embedding alongside head_embedding
-        umap_.py simplicial_set_embedding always calls with move_other=True,
-        even though our default is move_other=False
+        During an initial fit, (umap_.py simplicial_set_embedding) this is
+        true, and head_embedding == tail_embedding.  But when embedding other
+        points (umap_.py transform) the tail embedding is the existing embedding,
+        and move_other is False (current, 'tail' embedding is not changed.
     output_constrain: default None
-        dict of numba point or grad submanifold projection functions
+        Dict of numba point or grad submanifold projection functions.
+        When set, we are being called from an initial umap 'fit' and are not
+        transforming additional points into an existing embedding.  In this
+        case, both head_ and tail_embedding are identical lo-D embeddings of
+        the entire point cloud.  tail_embedding is conceptually the 'existing'
+        point cloud.
     pin_mask: default None
         Array of shape (n_samples) or (n_samples, n_components)
         The weights (in [0,1]) assigned to each sample, defining how much they
@@ -1074,14 +1117,16 @@ def optimize_layout_euclidean(
         The optimized embedding.
     """
 
-    #verbose = True
+    verbose = False
     if verbose:
         print("optimize_layout_euclidean")
-        print(type(head_embedding), head_embedding.dtype if isinstance(head_embedding, np.ndarray) else "")
-        print(type(tail_embedding), tail_embedding.dtype if isinstance(tail_embedding, np.ndarray) else "")
-        print(type(head), head.dtype if isinstance(head, np.ndarray) else "")
-        print(type(tail), tail.dtype if isinstance(tail, np.ndarray) else "")
-        print(type(n_epochs))
+        print("head_embedding, tail_embedding")
+        print(type(head_embedding), (head_embedding.dtype, head_embedding.shape) if isinstance(head_embedding, np.ndarray) else "")
+        print(type(tail_embedding), (tail_embedding.dtype, tail_embedding.shape) if isinstance(tail_embedding, np.ndarray) else "")
+        print("head, tail")
+        print(type(head), (head.dtype, head.shape) if isinstance(head, np.ndarray) else "")
+        print(type(tail), (tail.dtype, tail.shape) if isinstance(tail, np.ndarray) else "")
+        print("n_epochs", type(n_epochs), n_epochs)
         print(type(epochs_per_sample), epochs_per_sample.dtype if isinstance(epochs_per_sample, np.ndarray) else "")
         print("a,b", type(a), type(b))
         print("rng_state", rng_state,type(rng_state))
@@ -1093,23 +1138,29 @@ def optimize_layout_euclidean(
         print("output_constrain", output_constrain)
         print("pin_mask", type(pin_mask))
         print("head,tail_emebdding shapes", head_embedding.shape, tail_embedding.shape)
-        for i in range(min(150,head_embedding.shape[0])):
+        for i in range(min(20,head_embedding.shape[0])):
             print(f"head_embedding[{i}] = {head_embedding[i]}")
         if head_embedding.shape == tail_embedding.shape and np.allclose(head_embedding,tail_embedding):
             print("head_embedding ~= tail_embedding")
         else:
             print("head_embedding not ~= tail_embedding")
-            for i in range(min(150,head_embedding.shape[0])):
+            for i in range(min(20,head_embedding.shape[0])):
                 print(f"tail_embedding[{i}] = {tail_embedding[i]}")
 
         print("head,tail           shapes", head.shape, tail.shape)
-        for i in range(min(150,head.shape[0])):
+        for i in range(min(20,head.shape[0])):
             print(f"head[{i}] = {head[i]}")
         if head.shape == tail.shape and np.allclose(head,tail):
             print("head ~= tail")
         else:
-            for i in range(min(150,tail_embedding.shape[0])):
+            for i in range(min(20,tail_embedding.shape[0])):
                 print(f"tail[{i}] = {tail[i]}")
+        if pin_mask is not None:
+            print("pin_mask", type(pin_mask))
+            print("pin_mask", pin_mask)
+        if output_constrain is not None:
+            print("output_constrain", type(output_constrain))
+            print("output_constrain", output_constrain)
 
     dim = head_embedding.shape[1]
     alpha = initial_alpha
@@ -1130,6 +1181,7 @@ def optimize_layout_euclidean(
     #             perhaps better in numba >= 0.53?
     # But eventually it would be nice to accept a list of functions
     fns_idx_pt = []
+    fns_idx_pts = []
     fns_idx_grad = []
 
     if isinstance(pin_mask, dict): # pin_mask is a more generic "constraints" dictionary
@@ -1142,13 +1194,16 @@ def optimize_layout_euclidean(
             if k=='idx_pt':
                 fns_idx_pt = [pin_mask[k]] # revert: do NOT support a list, numba issues?
                 have_constraints = True
+            if k=='idx_ipts':
+                fns_idx_pts = [pin_mask[k]] # revert: do NOT support a list, numba issues?
+                have_constraints = True
             elif k=='idx_grad':
                 fns_idx_grad = [pin_mask[k]]
                 have_constraints = True
             #elif k=='epoch': fns_epoch = [pin_mask[k][0]]
             else:
                 print(" Warning: unrecognized constraints key", k)
-                print(" Allowed constraint keys:", recognized)
+                print(" Allowed constraint keys: idx_pt and idx_grad")
         # I'm trying to avoid numba 0.53 warnings (about firstclass functions)
 
     else:
@@ -1219,12 +1274,18 @@ def optimize_layout_euclidean(
     # Note: _chain_idx_pt has some numba issues
     #       todo: get rid of list fns_idx_pt etc (not useful)
     wrap_idx_pt = None # or con.noop_pt
+    wrap_idx_pts = None
     wrap_idx_grad = None # or con.noop_grad
     if len(fns_idx_pt):
         #wrap_idx_pt = _chain_idx_pt( fns_idx_pt )
         if len(fns_idx_pt) > 1:
             print(" Warning: only accepting 1st idx_pt constraint for now")
         wrap_idx_pt = fns_idx_pt[0]
+    if len(fns_idx_pts):
+        #wrap_idx_pt = _chain_idx_pt( fns_idx_pt )
+        if len(fns_idx_pts) > 1:
+            print(" Warning: only accepting 1st idx_pts constraint for now")
+        wrap_idx_pts = fns_idx_pts[0]
     if len(fns_idx_grad):
         #wrap_idx_grad = _chain_idx_grad( fns_idx_pt )
         if len(fns_idx_grad) > 1:
@@ -1240,12 +1301,16 @@ def optimize_layout_euclidean(
         for k in output_constrain:
             fn = output_constrain[k]
             if k == 'pt': outconstrain_pt = fn; have_constraints=True
-            if k == 'grad': outconstrain_grad = fn; have_constraints=True
-            if k == 'epoch_pt': outconstrain_epoch_pt = fn; have_constraints=True
-            if k == 'final_pt': outconstrain_final_pt = fn; have_constraints=True
+            elif k == 'grad': outconstrain_grad = fn; have_constraints=True
+            elif k == 'epoch_pt': outconstrain_epoch_pt = fn; have_constraints=True
+            elif k == 'final_pt': outconstrain_final_pt = fn; have_constraints=True
+            else:
+                print("output_constrain[",k,"] ignored")
+                print("allowed keys: pt grad epoch_pt final_pt\n")
 
-    if False and have_constraints:
+    if verbose and have_constraints:
         if wrap_idx_pt is not None: print("wrap_idx_pt",wrap_idx_pt)
+        if wrap_idx_pts is not None: print("wrap_idx_pts",wrap_idx_pts)
         if wrap_idx_grad is not None: print("wrap_idx_grad",wrap_idx_grad)
         if outconstrain_pt is not None: print("outconstrain_pt",outconstrain_pt)
         if outconstrain_grad is not None: print("outconstrain_grad",outconstrain_grad)
@@ -1340,6 +1405,8 @@ def optimize_layout_euclidean(
             dens_re_mean = np.mean(dens_re_sum)
             dens_re_cov = np.dot(dens_re_sum, dens_R) / (n_vertices - 1)
 
+        #if wrap_idx_pt is not None: print("wrap_idx_pt")
+        #if wrap_idx_pts is not None: print("wrap_idx_pts")
         optimize_fn(
             head_embedding,
             tail_embedding,
@@ -1358,7 +1425,8 @@ def optimize_layout_euclidean(
             epoch_of_next_negative_sample,
             epoch_of_next_sample,
             n,
-            wrap_idx_pt,        #
+            wrap_idx_pt,        #      constraint fn(idx, pt)
+            wrap_idx_pts,       #                    idx, pts (full point cloud)
             wrap_idx_grad,      #
             outconstrain_pt,    #      constraint fn(pt) or None
             outconstrain_grad,  #
@@ -1639,8 +1707,9 @@ def optimize_layout_euclidean(
 
         alpha = initial_alpha * (1.0 - (float(n) / float(n_epochs)))
 
-        if verbose and n % int(n_epochs / 10) == 0:
-            print("\tcompleted ", n, " / ", n_epochs, "epochs")
+        # tqdm antiquates this:
+        #if verbose and (n==0 or n % int(n_epochs / 10) == 0):
+        #    print("\tcompleted ", n, " / ", n_epochs, "epochs")
 
     if outconstrain_final_pt is not None:
         outconstrain_final_pt(head_embedding)

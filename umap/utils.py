@@ -254,7 +254,7 @@ def reposition_jit(x: numba.float32[:,:],
     possibly originating from a umapper.graph_ membership strengths.  Such strengths
     are based on the hi-D distance, rather than actual lo-D distance.
 
-    All non-up_idx[:] neighbors move vectors is discouted individually by the strength
+    All non-up_idx[:] neighbors move vectors are discouted individually by the strength
     matrix, with a value in [0.0,1.0].  Neighbor move distance are uniformly reduced
     by another nnfactor.
 
@@ -273,7 +273,12 @@ def reposition_jit(x: numba.float32[:,:],
                             symmetric edge STRENGTH matrix with values in [0.0,1.0].
                             1.0 is strongest-connected (i.e. closest neighbor)
     nbr         1 to enable n.n. movement
-    thresh      only use connection STRENGTHs greater than this
+    thresh      only use closest quantile of connection STRENGTHs (skip far/weak nbrs)
+                effectively cuts down on the graphs n_neighbors, to restrict # of move pts
+    thresh      skip this quantile of weakest connection STRENGTHs (skip far/weak nbrs)
+                [default 0.0] uses full umapper weight matrix nn.s
+                roughly umapper.n_neighbors*(1-thresh) nn.s will move
+                w/ some variation due to symmetrization
     verbose     0,1,2,3 to see what happened
     nnfactor    uniform movement reduction applied to all neighbors-of-up_idx[]
 
@@ -281,12 +286,12 @@ def reposition_jit(x: numba.float32[:,:],
     ------
     a new low-D embedding based on x[:,:] and its explicit updates 'up_*'
 
-    If x is a current UMAP lo-D embedding, the return value might be a good
-    starting point to continue (modify) an existing umap embedding.
-
-    Particular for lo-D == 2, neighbors can easily get "stuck" behind other points.
+    Particularly for lo-D == 2, neighbors can easily get "stuck" behind other points.
     The returned embedding can "spread out" a cluster based on just a few points.
     
+    If x is a current UMAP lo-D embedding, the `reposition` return value might
+    be a better starting point to continue (modify) an existing umap embedding.
+
     NOTES/TODO:
         - option to adjust thresh so NO neighborhoods intersect, so points
           move either one way or the other and never in some average direction
@@ -299,7 +304,9 @@ def reposition_jit(x: numba.float32[:,:],
     #if thresh is None:
     #    thresh = 0.0
     # a nbr=0 trivial update (just the specified movements, no more)
-    if verbose>=2: print("type(nbr)",type(nbr),"nbr",nbr,"thresh",thresh,"verbose",verbose)
+    if verbose>=1: print("type(nbr)",type(nbr),"nbr",nbr,"thresh",thresh,
+                         "nnfactor",nnfactor,"verbose",verbose)
+
     if nbr==0:
         y = x.copy()      # our return value - for no updates, exact copy
         dim = x.shape[1]  # assume sane dimensions, for now
@@ -318,6 +325,36 @@ def reposition_jit(x: numba.float32[:,:],
         # y first accumulates over moved points 'p'
         # the weighted movement vectors for all 'other' in nbrhoods of 'p'
         if verbose>=3: print("loop over pts in up_idx =",up_idx)
+
+        # NEW: use nn_max_strength as a scale for thresh values in [0,1],
+        #      so thresh = 0.0
+        # nn_max_strength COULD be per-point, but HERE it's some global max
+        #   Now max connection strength is for CLOSEST neighbors, and this
+        #   really may vary wildly depending on n.n. distribution and actual
+        #   n_neighbors !
+        # Initial thinking-out-loud:
+        #nn_max_strength = 0.0
+        #for p in range(up_idx.shape[0]):
+        #    cols = indices[lo:hi]   # columns (neighbors) of this row (pt)
+
+        #    nbr_max0 = 0.0
+        #    for j in range(cols.shape[0]):  # for echo 'other' colum
+        #        strength = vals[j]          # umap strength[pt<->other] in [0,1]
+        #        nbr_max0 = max(nbr_max0, strength)
+
+        #   nbr_max = np.max(vals)
+        #   assert( np.abs(nbr_max0 - nbr_max) < 1e-4 )
+
+        #    nn_max_strength = max(nn_max_strength, nbr_max)
+        # nn_max_strength COULD be per-point, but HERE it's some global max
+        #   Now max connection strength is for CLOSEST neighbors, and this
+        #   really may vary wildly depending on n.n. distribution and actual
+        #   n_neighbors !
+        # Perhaps reinterpret thresh as % of closest n_neighbors to use,
+        # so theshold can UNIFORMLY reduce n_neighbors to same number.
+        #   This means we want the 'thresh' QUANTILE of strengths,
+        #   (for EACH drag point 'p')
+
         for p in range(up_idx.shape[0]):
             pt = up_idx[p]          # point number
             old_pt_pos = x[pt,:]
@@ -332,21 +369,32 @@ def reposition_jit(x: numba.float32[:,:],
             hi = indptr[pt+1]       # row pt indices end
             cols = indices[lo:hi]   # columns (neighbors) of this row (pt)
             vals = data[lo:hi]      # values in above columns (umap membership strengths)
+
+            #strength_thresh = thresh  # Original: thresh is some absolute strength
+
+            # NEW: thresh --> quantile of strength distribution (over all graph neighbors)
+            # i.e. for thresh==0.5, we'll restrict our attention to the
+            #      strongest HALF of the n_neighbors in the umap weight matrix
+            nnstrengths = vals[cols]
+            strength_thresh = np.quantile(nnstrengths, thresh)
+            # note: we do not assume sortedness of n.n. connection strengths here
+            if verbose>=1: print("p",p,"strength_thresh",strength_thresh," nn-repos",np.sum(nnstrengths > strength_thresh))
+
             for j in range(cols.shape[0]):  # for echo 'other' colum
                 other = cols[j]             # other point number
                 other_pos = x[other]        # other point position
                 strength = vals[j]          # umap strength[pt<->other] in [0,1]
-                if strength <= thresh:       # skip if other insufficiently connected
+                if strength <= strength_thresh:       # skip if other insufficiently connected
                     continue
                 if other in up_idx:         # if other is explicitly moved, don't screw with it
                     continue
-                if verbose>=3: print("pt ",pt,"<--> other",other,"@",other_pos,"strength",vals[j])
+                if verbose>=4: print("pt ",pt,"<--> other",other,"@",other_pos,"strength",vals[j])
                 # other moves uniformly downweighted by additional nnfactor
                 other_delta = nnfactor * strength * pt_move # move vector contribution of other
                 if sum_wt[other] == 0.0:
-                    if verbose>=3: print("   single   contrib other",other,"delta",other_delta,"dist",round3(norm(other_delta)),"strength",strength)
+                    if verbose>=4: print("   single   contrib other",other,"delta",other_delta,"dist",round3(norm(other_delta)),"strength",strength)
                 else:
-                    if verbose>=2: print("   multiple contrib other",other,"delta",other_delta,"dist",round3(norm(other_delta)),"strength",strength)
+                    if verbose>=3: print("   multiple contrib other",other,"delta",other_delta,"dist",round3(norm(other_delta)),"strength",strength)
                 sum_wt[other] += strength           # accum other vecs for different pt-nbrhoods
                 y[other,:] += other_delta           # y[other] ~ vector movement sum
 
@@ -354,21 +402,21 @@ def reposition_jit(x: numba.float32[:,:],
         for other in range(x.shape[0]):
             if sum_wt[other] != 0.0:        # sum_wt 0 ~ other is in NO nbrhood of a 'p' have sum_wt==0.0
                 y[other,:] /= (sum_wt[other] + 1e-4)
-                if verbose>=3: print("avg other",other,"movement",y[other,:],"dist",round3(norm(y[other,:])))
+                if verbose>=4: print("avg other",other,"movement",y[other,:],"dist",round3(norm(y[other,:])))
         # record the explicit delta-movements
         # (more robust to do it "again", at least for now, until error-checking done)
         for p in range(up_idx.shape[0]):
             pt = up_idx[p]
             y[pt,:] = up_pos[p] - x[pt,:]
             sum_wt[pt] = 1.0
-            if verbose>=3: print("explicit update pt",pt,"by",y[pt,:],"dist",round3(norm(y[pt,:])))
+            if verbose>=4: print("explicit update pt",pt,"by",y[pt,:],"dist",round3(norm(y[pt,:])))
 
         # then we apply the movement deltas, now across entire dataset
         for other in range(x.shape[0]):
             # other original pos x[other,:] moves by y[other,:] ~ weighted-average-other_delta
             y_final = x[other,:] + y[other,:]
             if sum_wt[other] > 0.0:
-                if verbose>=1:
+                if verbose>=2:
                     ptmsg = "   other" if other not in up_idx else "      pt"
                     print(ptmsg,other,"@",y[other,:],"-->",y_final,"dist",round3(norm(y[other,:])),"sum_wt",round3(sum_wt[other]))
             else:
@@ -390,8 +438,13 @@ def reposition(x, up_pts, up_pos, umapper, thresh=0.0, verbose=0, nnfactor=1.0):
     up_pts  int vector which pts (rows of x) explicitly move?
     up_pos  array[len(up_pts), dim] ~ final destination of those points.
     umapper umapper.graph_ is a csr-format compressed array of membership strengths in [0,1]
-    thresh  operate on n.n. whose strengths are >= thresh in [0,1]
+    thresh  skip this quantile of weakest connection STRENGTHs (skip far/weak nbrs)
+            effectively cuts down on umapper.n_neighbors.
+            [default 0.0] uses full umapper weight matrix nn.s
+            (i.e. roughly umapper.n_neighbors*(1-thresh) nn.s will move
+                  w/ some variation due to symmetrization)
     verbose 0,1,2,3 effective
+    nnfactor [default 1.0] reduce n.n. movement strengths by this factor
 
     at high thresh, up_pts neighborhoods are more likely disjoint
     at default, up_pts may have 'other' nbrs that accumulate a weighted

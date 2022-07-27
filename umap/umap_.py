@@ -2383,7 +2383,7 @@ class UMAP(BaseEstimator):
             index.  This supports pinning or other forces on particular points
             of the embedding.
 
-            Numpy array format:
+            TYPE 1: Numpy array format:
             This defines how much points will be updated from their initial
             position: 0 means the point will be pinned (fixed), 1 means it will
             be updated normally, and in-between values allow for soft-pinning.
@@ -2395,7 +2395,7 @@ class UMAP(BaseEstimator):
             A 2-D 0/1 mask can supply different updating weight to each
             dimension of each sample.
 
-            Constraint dictionary:
+            TYPE 2: Constraint dictionary:
             Allows user-defined constraints of a few types (keys).  Values are
             numba jit functions that (in contrast to constructor
             ``output_constrain``) may use the index of X for point-specific
@@ -3177,7 +3177,7 @@ class UMAP(BaseEstimator):
                 #densmap_kwds={},
                 tqdm_kwds=slef.tqdm_kwds,
                 #move_other=False,
-                #output_constrain=None
+                #output_constrain=None # transform new points NEVER uses constraints
                 #pin_mask=None
             )
         else:

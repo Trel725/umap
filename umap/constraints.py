@@ -91,22 +91,40 @@ _mock_his = np.full(2, constrain_hi, dtype=np.float64)
 _mock_ones = np.ones(2, dtype=np.float64)
 _mock_zeros = np.zeros(2, dtype=np.float64)
 
-# Evolve from @jitclass version in "constraints.py" to discrete functions,
+# Evolve from @jitclass old versions to discrete functions,
 # mirroring the approach of distances.py
 
 # Here, instead of a class encapsulating all params, the constraint parameters
-# are passed as a tuple (of constraint_kwds 
+# are passed as a tuple (of constraint_kwds)
 
 # The class methods become function name suffixes
-#   class method                    suffix      args
-#   ------------------------------  -------     ----
-#   project_onto_constraint         _pt         idx, pt
+#   class method                    suffix      first args
+#   ------------------------------  -------     ----------
+#   project_onto_constraint         _pt         idx, pt           pt modified
+#               ...(new alt)        _ipts       idx, pts          pts[idx,:] modified
 #   project_rows_onto_constraint    _pts        pts
 #   project_onto_tangent_space      _grad       idx, pt, grad
 #   project_rows_onto_tangent_space _grads      grads
 #    (maybe) fit_onto_constraint    _fit        pts (?)
 # for dataset-agnostic projectors (supplied to UMAP constructor) the
 # 'idx' argument is dropped.
+#
+# pts, grad: These args don't care about the 'identity' of the point,
+#            or anything else in the point cloud for that matter.
+#
+# For (idx,pt,...) args, pt was always a vector[loD].
+#   NEW: if pt is an array[idx,loD], then it is the FULL POINT CLOUD,
+#        and we can use `pt[idx,:]` in these original functions.
+#
+#   WHY? some constraints require the FULL point cloud.  For example,
+#        clustering forces toward center-of-mass.  Upon code analysis,
+#        constraints are only applied during 'fit' phase, and the full
+#        point cloud coords[idx,loD] can always be passed via the
+#        `tail_embedding` argument in optimize_layout_euclidean.
+#
+#   OH-OH:  numba generates the type based on call args, so 'pt' can
+#           be EITHER 1 or 2-D, not both.
+#   Is there a way for numba to accept a 'Choice' typing?
 
 @numba.njit()
 def noop_pt(idx,pt):
@@ -164,8 +182,9 @@ def dimlohi_pts(pts, los=_mock_los, his=_mock_his):
 #
 # Consider whether 'freeinf_grad' will do the job -- it's array can be [pt,dim] to
 # zero specific dims of specific points.
-@numba.njit()
-def pinindexed_pt(idx, pt, pin_idx=None, pin_pos=None):
+_spec = ["f4[:](i8, f4[:], i8[:], f4[:,:])"]
+@numba.njit(_spec)
+def pinindexed_pt(idx, pt, pin_idx, pin_pos):
     """ pin_idx and pin_pos MUST be sorted by increasing pin_idx by caller.
 
         order = np.argsort(idx)     # e.g. {0:pin0, 5:pin5, ...}, pinN~numpy vectors
@@ -174,16 +193,72 @@ def pinindexed_pt(idx, pt, pin_idx=None, pin_pos=None):
     """
     i = np.searchsorted( pin_idx, idx )         # binary search (uggh)
     if i < pin_idx.size and pin_idx[i] == idx:
+        # numba does NOT support "one or two dim" array like this:
+        #if len(pt.shape) == 1: # original case
         pt[:] = pin_pos[i,:]
+        #else: # pt is 2d array[idx,lod]
+        #    pt[idx,:] = pin_pos[i,:]
         #print("pinindexed pt: i",i,"-->", pt)
     #else:
     #    print("pinindexed pt: i",i,"--> no-op")
+    # actually return value doesn't matter -- we should modify in-place
     return pt
 
-@numba.njit()
-def pinindexed_pts(pts, pin_idx=None, pin_pos=None):
+if False:
+    # Attempting polymorphism this way also did not work
+    _spec = ["f4[:](i8, f4[:,:], i8[:], f4[:,:])"]
+    @numba.njit(_spec)
+    def pinindexed_pt(idx, pt, pin_idx, pin_pos):
+        """ pin_idx and pin_pos MUST be sorted by increasing pin_idx by caller.
+
+            order = np.argsort(idx)     # e.g. {0:pin0, 5:pin5, ...}, pinN~numpy vectors
+            pin_idx = pin_idx[order]
+            pin_pos = pin_pos[order]
+        """
+        i = np.searchsorted( pin_idx, idx )         # binary search (uggh)
+        if i < pin_idx.size and pin_idx[i] == idx:
+            #if len(pt.shape) == 1: # original case
+            #    pt[:] = pin_pos[i,:]
+            #else: # pt is 2d array[idx,lod]
+            pt[idx,:] = pin_pos[i,:]
+            #print("pinindexed pt: i",i,"-->", pt)
+        #else:
+        #    print("pinindexed pt: i",i,"--> no-op")
+        # actually return value doesn't matter -- we should modify in-place
+        return pt[idx,:]
+
+else:
+    # So it seems we have no choice except a differently-named function that accepts
+    # the full 2D "tail_embedding" point cloud...
+    #
+    # Oh. Maybe this resolution is OK for numba ?? (avoid another fn suffix)
+    _spec = ["f4[:](i8, f4[:,:], i8[:], f4[:,:])"]
+    @numba.njit(_spec)
+    def pinindexed_ipts(idx, pts, pin_idx, pin_pos):
+        """ pin_idx and pin_pos MUST be sorted by increasing pin_idx by caller.
+
+            order = np.argsort(idx)     # e.g. {0:pin0, 5:pin5, ...}, pinN~numpy vectors
+            pin_idx = pin_idx[order]
+            pin_pos = pin_pos[order]
+        """
+        i = np.searchsorted( pin_idx, idx )         # binary search (uggh)
+        if i < pin_idx.size and pin_idx[i] == idx:
+            #if len(pt.shape) == 1: # original case
+            #    pt[:] = pin_pos[i,:]
+            #else: # pt is 2d array[idx,lod]
+            pts[idx,:] = pin_pos[i,:]
+            #print("pinindexed pt: i",i,"-->", pt)
+        #else:
+        #    print("pinindexed pt: i",i,"--> no-op")
+        # actually return value doesn't matter -- we should modify in-place
+        return pts[idx,:]
+
+_spec = ["f4[:,:](f4[:,:], i8[:], f4[:,:])"]
+@numba.njit(_spec)
+def pinindexed_pts(pts, pin_idx, pin_pos):
     """ pts is expected to be the full cloud of points,
-        so all values of pin_idx are valid.
+        so all values of pin_idx are valid, and
+        pin_pos also has shape of full point cloud.
         (This is more efficient, no search)
     """
     assert pin_idx is not None and pin_pos is not None
@@ -196,6 +271,9 @@ def pinindexed_pts(pts, pin_idx=None, pin_pos=None):
 
 @numba.njit()
 def pinindexed_grad(idx, pt, grad, pin_idx=None):
+    """ We assume the pin_idx constraints are satisfied already, so
+        if idx is in pin_idx, we apply zero gradient. pt arg is irrelevant.
+    """
     i = np.searchsorted( pin_idx, idx )         # binary search (uggh)
     if i < pin_idx.size and pin_idx[i] == idx:
         grad[:] = 0.0
@@ -215,15 +293,37 @@ def freeinf_pt(idx, pt, infs):
     # idx must be a scalar :(
     assert infs is not None
     assert( infs.shape[1] == pt.shape[0] )
-    if idx >= 0 and idx < infs.shape[0]:
+    if idx >= 0 and idx < infs.shape[0]:  # i.e. idx is valid
         #vals = infs[idx,:].astype(pt.dtype)
         vals = infs[idx,:]         # assuming same dtype for pt, infs
-        pt0 = pt.copy()
+        #pt0 = pt.copy()
+        #if len(pt.shape) == 1: # original
         pt[:] = np.where( ~np.isinf(vals), vals, pt )
+        #else:
+        #    assert( len(pt.shape) == 2 )
+        #    pt[idx,:] = np.where( ~np.isinf(vals), vals, pt[idx,:] )
         #if idx==13 or idx==14:
         #    print("freeinf_pt",idx,pt0,"-->",pt, infs[13],infs[14])
     return pt
 
+@numba.njit() #"f4[:](i8, f4[:,:], f4[:,:])")
+def freeinf_ipts(idx, pts, infs):
+    # idx must be a scalar :(
+    assert infs is not None
+    assert( idx < pts.shape[0] )
+    assert( infs.shape[1] == pts.shape[1] )
+    if idx >= 0 and idx < infs.shape[0]:  # i.e. idx is valid
+        #vals = infs[idx,:].astype(pt.dtype)
+        vals = infs[idx,:]         # assuming same dtype for pt, infs
+        #pt0 = pt.copy()
+        #if len(pt.shape) == 1: # original
+        #    pt[:] = np.where( ~np.isinf(vals), vals, pt )
+        #else:
+        #    assert( len(pt.shape) == 2 )
+        pts[idx,:] = np.where( ~np.isinf(vals), vals, pts[idx,:] )
+        #if idx==13 or idx==14:
+        #    print("freeinf_pt",idx,pt0,"-->",pt, infs[13],infs[14])
+    return pts[idx,:]
 
 @numba.njit()
 def freeinf_pts(pts, infs=None):
@@ -238,6 +338,7 @@ def freeinf_pts(pts, infs=None):
 
 @numba.njit()
 def freeinf_grad(idx, pt, grad, infs=None):
+    """ pt arg is irrelevant -- zero the grad based on infs[idx,:] only. """
     #assert grad.shape[0] == infs.shape[1]
     #if grad.shape[0] == 0:
     #    print("WARNING: freeinf_grad grad.shape",grad.shape," expected",pt.shape)
@@ -300,14 +401,35 @@ if False:
 # Note: these "springs" have equilibrium length zero!
 @numba.njit()
 def springindexed_pt(idx, pt, pin_idx=None, pin_pos=None, springs=None):
+    """ projection occurs only for infinite spring force. """
     assert pin_idx is not None and pin_pos is not None and springs is not None
     assert len(pin_idx.shape)==1 and len(pin_pos.shape)==2
     assert pin_idx.shape[0] == pin_pos.shape[0] and pin_idx.shape == springs.shape
-    assert len(pt.shape)==1 and pt.shape[0] == pin_pos.shape[1]
     i = np.searchsorted(pin_idx, idx)
     if i < pin_idx.size and pin_idx[i] == idx and springs[i] == np.inf:
+        #if len(pt.shape) == 1:
+        assert pt.shape[0] == pin_pos.shape[1] # loD matches
         pt[:] = pin_pos[i]
+        #else:
+        #    assert len(pt.shape) == 2 and pt.shape[1] == pin_pos.shape[1]
+        #    pt[idx,:] = pin_pos[i]
     return pt
+
+@numba.njit()
+def springindexed_ipts(idx, pts, pin_idx=None, pin_pos=None, springs=None):
+    """ projection occurs only for infinite spring force. """
+    assert pin_idx is not None and pin_pos is not None and springs is not None
+    assert len(pin_idx.shape)==1 and len(pin_pos.shape)==2
+    assert pin_idx.shape[0] == pin_pos.shape[0] and pin_idx.shape == springs.shape
+    i = np.searchsorted(pin_idx, idx)
+    if i < pin_idx.size and pin_idx[i] == idx and springs[i] == np.inf:
+        #if len(pt.shape) == 1:
+        #    assert pt.shape[0] == pin_pos.shape[1] # loD matches
+        #    pt[:] = pin_pos[i]
+        #else:
+        assert len(pts.shape) == 2 and pts.shape[1] == pin_pos.shape[1]
+        pts[idx,:] = pin_pos[i]
+    return pts[idx,:]
 
 @numba.njit()
 def springindexed_pts(pts, pin_idx=None, pin_pos=None, springs=None):
@@ -319,12 +441,18 @@ def springindexed_pts(pts, pin_idx=None, pin_pos=None, springs=None):
 
 @numba.njit()
 def springindexed_grad(idx, pt, grad, pin_idx=None, pin_pos=None, springs=None):
+    """ gradient occurs only for non-infinite spring force -- if infinite, we
+        assume the caller has already satisfied the constraint (gradient zero).
+        "pt" (loD point for idx, or full cloud of points) is unchanged.
+    """
     i = np.searchsorted(pin_idx, idx)
-    if i < pin_idx.size and pin_idx[i] == idx:
+    if i < pin_idx.size and pin_idx[i] == idx: # if idx is pinned...
         if springs[i] == np.inf:
             #pt[:] = pin_pos[i]  (assume this holds)
             grad[:] = 0.0
         else:
+            # NO: numba hardwires array dimension: pt_idx = pt if len(pt.shape)==1 else pt[idx,:]
+            #     pt MUST be 1D already
             delta = pin_pos[i] - pt
             #dist2 = np.sum(np.square(delta))
             #dist = np.sqrt(dist2)
@@ -453,6 +581,16 @@ def test_pinindexed():
     #print("x_ind",x_ind)
     #print("x_pos",x_pos)
     y = pinindexed_pt(1, x[1,:].copy(), x_ind, x_pos)
+    # Can we dispatch correctly the new 2d cloud version?
+    #y = pinindexed_pt(1, x.copy(), x_ind, x_pos)
+    # No: numba could not resolve above fn call
+    # Alternate overload attempt
+    #y = pinindexed_pts(1, x.copy(), x_ind, x_pos) # prepend 'idx' to orig fn call
+    # No: too many args
+    #
+    # Uggh. yet another fn suffix to help numba...
+    y = pinindexed_ipts(1, x.copy(), x_ind, x_pos) # prepend 'idx' to orig fn call
+    
     #print("y3",y)
     assert np.all(y[:] == x[1,:])
     y = pinindexed_pt(-1, x[1,:].copy(), x_ind, x_pos)
