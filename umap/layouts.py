@@ -724,7 +724,7 @@ def _optimize_layout_euclidean_single_epoch_para(
         #grad_d     = np.empty(dim, dtype=head_embedding.dtype)
         #other_grad = np.empty(dim, dtype=head_embedding.dtype)
         # This thread writes into these memory locations:
-        thr = numba.np.ufunc._get_thread_id()   # for tbb or omp backed, gives {0,1,...}
+        thr = numba.np.ufunc.get_thread_id()   # for tbb or omp backed, gives {0,1,...}
         # try out "view" approach 1st:
         #grad_d = tmp[ thr, 0:dim ]
         #other_grad = tmp[ thr, dim:(dim+dim) ]
