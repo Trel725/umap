@@ -47,7 +47,7 @@ configuration = {
         "numpy >= 1.17",
         "scikit-learn >= 0.22",
         "scipy >= 1.0",
-        "numba >= 0.49",
+        "numba >= 0.56",
         "pynndescent >= 0.5",
         "tqdm",
     ],
