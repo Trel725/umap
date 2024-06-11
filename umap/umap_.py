@@ -1906,7 +1906,7 @@ class UMAP(BaseEstimator):
             raise ValueError("metric is neither callable nor a recognised string")
 
         if self.output_constrain is not None:
-            if self.metric != "euclidean":
+            if self.output_metric != "euclidean":
                 raise ValueError("For now we allow output constraints only for output_metric 'euclidean'")
             if not isinstance(self.output_constrain, dict):
                 raise ValueError("output_constrain must be a dictionary")
